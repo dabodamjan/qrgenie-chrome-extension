@@ -8,6 +8,9 @@
   if (window.__qrgenieAreaActive) return;
   window.__qrgenieAreaActive = true;
 
+  // Firefox only guarantees promises on browser.*; Chrome and Edge on chrome.*.
+  const api = globalThis.browser ?? globalThis.chrome;
+
   const host = document.createElement('div');
   host.style.all = 'initial';
   const root = host.attachShadow({ mode: 'closed' });
@@ -116,7 +119,7 @@
     requestAnimationFrame(() =>
       requestAnimationFrame(() =>
         setTimeout(() => {
-          chrome.runtime.sendMessage({
+          api.runtime.sendMessage({
             type: 'qrgenie:area-selected',
             x: r.x,
             y: r.y,

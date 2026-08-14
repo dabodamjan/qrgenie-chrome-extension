@@ -6,6 +6,9 @@
 (() => {
   if (window.__qrgenieOverlay) return;
 
+  // Firefox only guarantees promises on browser.*; Chrome and Edge on chrome.*.
+  const api = globalThis.browser ?? globalThis.chrome;
+
   const state = { host: null, root: null };
 
   const CSS = `
@@ -229,8 +232,8 @@
         </div>`;
     } else if (result.reason === 'blocked') {
       bodyHtml = `
-        <div class="error">Chrome does not let extensions scan this page.</div>
-        <div class="hint">Its own pages, the Web Store and the built-in PDF viewer are off limits. Try the scan on a regular website.</div>`;
+        <div class="error">Your browser does not let extensions scan this page.</div>
+        <div class="hint">Browser pages, extension stores and the built-in PDF viewer are off limits. Try the scan on a regular website.</div>`;
     } else {
       const what = result.source === 'area' ? 'in that area' : 'in this image';
       bodyHtml = `
@@ -253,7 +256,7 @@
     const openBtn = card.querySelector('[data-act="open"]');
     if (openBtn) {
       openBtn.addEventListener('click', () => {
-        chrome.runtime.sendMessage({ type: 'qrgenie:open-url', url: result.payload.url });
+        api.runtime.sendMessage({ type: 'qrgenie:open-url', url: result.payload.url });
       });
     }
 
@@ -264,7 +267,7 @@
     document.addEventListener('keydown', onKey, true);
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  api.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === 'qrgenie:show-result') show(msg.result);
   });
 

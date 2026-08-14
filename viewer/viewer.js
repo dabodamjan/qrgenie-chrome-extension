@@ -1,6 +1,7 @@
 /*
  * Fallback result page, used when the extension cannot inject its overlay
- * into the page (chrome:// pages, the Web Store, the PDF viewer). The result
+ * into the page (chrome:// and about: pages, extension stores, the PDF
+ * viewer). The result
  * is collected from the service worker with a read-once message, so decoded
  * content (Wi-Fi passwords, OTP secrets) never appears in the URL or in any
  * stored state.
@@ -10,12 +11,15 @@
  * hand us its payload (and vice versa).
  */
 (async () => {
+  // Firefox only guarantees promises on browser.*; Chrome and Edge on chrome.*.
+  const api = globalThis.browser ?? globalThis.chrome;
+
   const body = document.getElementById('body');
   const nonce = location.hash.slice(1);
 
   let result = null;
   try {
-    const reply = await chrome.runtime.sendMessage({ type: 'qrgenie:get-result', nonce });
+    const reply = await api.runtime.sendMessage({ type: 'qrgenie:get-result', nonce });
     result = reply && reply.result;
   } catch (_) {}
 
@@ -36,12 +40,12 @@
 
   if (!result.ok) {
     if (result.reason === 'blocked') {
-      body.appendChild(el('div', null, 'Chrome does not let extensions scan this page.'));
+      body.appendChild(el('div', null, 'Your browser does not let extensions scan this page.'));
       body.appendChild(
         el(
           'div',
           'hint',
-          'Its own pages, the Web Store and the built-in PDF viewer are off limits. Try the scan on a regular website.'
+          'Browser pages, extension stores and the built-in PDF viewer are off limits. Try the scan on a regular website.'
         )
       );
     } else {
@@ -91,7 +95,7 @@
   if (p.url) {
     const openBtn = el('button', 'btn primary', 'Open link');
     openBtn.addEventListener('click', () => {
-      chrome.tabs.create({ url: p.url });
+      api.tabs.create({ url: p.url });
     });
     actions.appendChild(openBtn);
   }
