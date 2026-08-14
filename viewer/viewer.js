@@ -4,13 +4,18 @@
  * is collected from the service worker with a read-once message, so decoded
  * content (Wi-Fi passwords, OTP secrets) never appears in the URL or in any
  * stored state.
+ *
+ * The URL fragment carries only the nonce this tab was opened with: it names
+ * which pending result is ours, so a second scan opening its own viewer cannot
+ * hand us its payload (and vice versa).
  */
 (async () => {
   const body = document.getElementById('body');
+  const nonce = location.hash.slice(1);
 
   let result = null;
   try {
-    const reply = await chrome.runtime.sendMessage({ type: 'qrgenie:get-result' });
+    const reply = await chrome.runtime.sendMessage({ type: 'qrgenie:get-result', nonce });
     result = reply && reply.result;
   } catch (_) {}
 

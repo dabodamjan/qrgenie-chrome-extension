@@ -17,11 +17,18 @@ importScripts('vendor/jsQR.js', 'common/payload.js', 'common/crop.js');
 const MENU_IMAGE = 'qrgenie-decode-image';
 const MENU_AREA = 'qrgenie-scan-area';
 
-// Result waiting to be picked up by the fallback viewer page. Kept in worker
-// memory (never in a URL or storage) so decoded secrets such as Wi-Fi
-// passwords do not end up in tab URLs or session state; the viewer collects
-// it with a read-once message right after it loads.
-let pendingViewerResult = null;
+/*
+ * Results waiting to be picked up by fallback viewer pages, keyed by a random
+ * nonce. Kept in worker memory (never in a URL or storage) so decoded secrets
+ * such as Wi-Fi passwords do not end up in tab URLs or session state; each
+ * viewer collects its own entry with a read-once message right after it loads.
+ *
+ * Only the nonce travels in the viewer URL. It carries no payload, and binding
+ * on it keeps two concurrent scans from crossing results and stops a reloaded
+ * older viewer from consuming a newer scan's result.
+ */
+const pendingViewerResults = new Map();
+const MAX_PENDING_RESULTS = 8;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -76,9 +83,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const fromExtensionPage =
       sender && typeof sender.url === 'string' &&
       sender.url.startsWith(chrome.runtime.getURL(''));
-    if (fromExtensionPage) {
-      sendResponse({ result: pendingViewerResult });
-      pendingViewerResult = null;
+    const nonce = typeof msg.nonce === 'string' ? msg.nonce : '';
+    if (fromExtensionPage && pendingViewerResults.has(nonce)) {
+      sendResponse({ result: pendingViewerResults.get(nonce) });
+      pendingViewerResults.delete(nonce);
     } else {
       sendResponse({ result: null });
     }
@@ -228,10 +236,18 @@ async function showResult(tabId, result) {
     await chrome.tabs.sendMessage(tabId, { type: 'qrgenie:show-result', result });
   } catch (_) {
     // Restricted page (chrome://, Web Store, PDF viewer): use our own page.
-    // The payload stays in worker memory; the viewer asks for it on load.
-    pendingViewerResult = result;
+    // The payload stays in worker memory; the viewer asks for it on load,
+    // quoting the nonce it was opened with.
+    const nonce = crypto.randomUUID();
+    pendingViewerResults.set(nonce, result);
+    // Bound the map in case viewers never load (a blocked tabs.create, a tab
+    // closed before it asks). Oldest entry goes first — Map keeps insertion
+    // order — so a fresh scan is never the one dropped.
+    while (pendingViewerResults.size > MAX_PENDING_RESULTS) {
+      pendingViewerResults.delete(pendingViewerResults.keys().next().value);
+    }
     await chrome.tabs.create({
-      url: chrome.runtime.getURL('viewer/viewer.html')
+      url: chrome.runtime.getURL('viewer/viewer.html') + '#' + nonce
     });
   }
 }
