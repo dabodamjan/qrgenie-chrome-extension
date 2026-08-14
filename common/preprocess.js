@@ -5,9 +5,10 @@
  * pass. Loaded with importScripts() in the service worker and with require()
  * in the Node test suite, hence the UMD-ish wrapper.
  *
- * decodeLadder(imageData, jsQRFn) runs a bounded sequence of attempts over
- * one already-rasterized image:
- *   0. plain jsQR (inversion is jsQR's own attemptBoth on every rung)
+ * decodeLadder(imageData, jsQRFn, opts) runs a bounded sequence of attempts
+ * over one already-rasterized image:
+ *   0. plain jsQR (inversion is jsQR's own attemptBoth on every rung);
+ *      skipped with opts.skipPlain for callers that already tried it
  *   1-2. dark dilation (grayscale min filter) at two radii — turns gapped
  *        dot/rounded modules into solid ones without lightening them
  *   3-4. box blur + Otsu binarization at two radii — merges gaps and
@@ -72,31 +73,47 @@
     return out;
   }
 
-  // Separable min filter (dark dilation) with a (2r+1) square window.
+  /*
+   * Separable min filter (dark dilation) with a (2r+1) square window,
+   * clamped at the edges. Sliding minimum via a monotonic deque of indices,
+   * so the cost is O(1) amortized per pixel regardless of radius — the radius
+   * scales with image size, and a windowed scan was seconds on large captures.
+   */
   function minFilter(gray, w, h, r) {
     const tmp = new Uint8ClampedArray(w * h);
     const out = new Uint8ClampedArray(w * h);
+    const deque = new Int32Array(Math.max(w, h));
     for (let y = 0; y < h; y++) {
       const row = y * w;
-      for (let x = 0; x < w; x++) {
-        let m = 255;
-        const lo = Math.max(0, x - r);
-        const hi = Math.min(w - 1, x + r);
-        for (let i = lo; i <= hi; i++) {
-          if (gray[row + i] < m) m = gray[row + i];
+      let head = 0;
+      let tail = 0;
+      for (let i = 0; i < w + r; i++) {
+        if (i < w) {
+          const v = gray[row + i];
+          while (tail > head && gray[row + deque[tail - 1]] >= v) tail--;
+          deque[tail++] = i;
         }
-        tmp[row + x] = m;
+        const x = i - r;
+        if (x >= 0) {
+          while (deque[head] < x - r) head++;
+          tmp[row + x] = gray[row + deque[head]];
+        }
       }
     }
     for (let x = 0; x < w; x++) {
-      for (let y = 0; y < h; y++) {
-        let m = 255;
-        const lo = Math.max(0, y - r);
-        const hi = Math.min(h - 1, y + r);
-        for (let i = lo; i <= hi; i++) {
-          if (tmp[i * w + x] < m) m = tmp[i * w + x];
+      let head = 0;
+      let tail = 0;
+      for (let i = 0; i < h + r; i++) {
+        if (i < h) {
+          const v = tmp[i * w + x];
+          while (tail > head && tmp[deque[tail - 1] * w + x] >= v) tail--;
+          deque[tail++] = i;
         }
-        out[y * w + x] = m;
+        const y = i - r;
+        if (y >= 0) {
+          while (deque[head] < y - r) head++;
+          out[y * w + x] = tmp[deque[head] * w + x];
+        }
       }
     }
     return out;
@@ -164,13 +181,17 @@
     ];
   }
 
-  function decodeLadder(imageData, jsQRFn) {
-    const opts = { inversionAttempts: 'attemptBoth' };
-    const plain = jsQRFn(imageData.data, imageData.width, imageData.height, opts);
-    if (plain && plain.data) return plain.data;
+  // opts.skipPlain drops rung 0 for callers that already ran plain jsQR on
+  // these exact pixels (background.js decodeBitmap); direct/test use keeps it.
+  function decodeLadder(imageData, jsQRFn, opts) {
+    const jsqrOpts = { inversionAttempts: 'attemptBoth' };
+    if (!opts || !opts.skipPlain) {
+      const plain = jsQRFn(imageData.data, imageData.width, imageData.height, jsqrOpts);
+      if (plain && plain.data) return plain.data;
+    }
     for (const make of variants(imageData)) {
       const v = make();
-      const code = jsQRFn(v.data, v.width, v.height, opts);
+      const code = jsQRFn(v.data, v.width, v.height, jsqrOpts);
       if (code && code.data) return code.data;
     }
     return null;
