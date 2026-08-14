@@ -12,10 +12,16 @@
  * Nothing here talks to the network: captureVisibleTab and data: URLs are
  * local, and the vendored jsQR runs in this worker.
  */
-importScripts('vendor/jsQR.js', 'common/payload.js');
+importScripts('vendor/jsQR.js', 'common/payload.js', 'common/crop.js');
 
 const MENU_IMAGE = 'qrgenie-decode-image';
 const MENU_AREA = 'qrgenie-scan-area';
+
+// Result waiting to be picked up by the fallback viewer page. Kept in worker
+// memory (never in a URL or storage) so decoded secrets such as Wi-Fi
+// passwords do not end up in tab URLs or session state; the viewer collects
+// it with a read-once message right after it loads.
+let pendingViewerResult = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -37,7 +43,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === MENU_IMAGE) {
     decodeImageFlow(info, tab).catch((err) => reportFailure(tab.id, 'image', err));
   } else if (info.menuItemId === MENU_AREA) {
-    startAreaSelect(tab.id).catch((err) => reportFailure(tab.id, 'area', err));
+    // If the selection overlay cannot be injected, the page blocked us
+    // (chrome://, Web Store, PDF viewer) — not a failed decode.
+    startAreaSelect(tab.id).catch((err) => {
+      console.warn('QRGenie area select blocked:', err);
+      showResult(tab.id, failure('area', 'blocked'));
+    });
   }
 });
 
@@ -56,6 +67,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     decodeAreaFlow(msg, sender.tab.id).catch((err) =>
       reportFailure(sender.tab.id, 'area', err)
     );
+    return false;
+  }
+
+  if (msg.type === 'qrgenie:get-result') {
+    // Read-once pickup by the fallback viewer page. Only our own extension
+    // pages qualify — content scripts run inside web pages and never need it.
+    const fromExtensionPage =
+      sender && typeof sender.url === 'string' &&
+      sender.url.startsWith(chrome.runtime.getURL(''));
+    if (fromExtensionPage) {
+      sendResponse({ result: pendingViewerResult });
+      pendingViewerResult = null;
+    } else {
+      sendResponse({ result: null });
+    }
     return false;
   }
 
@@ -96,14 +122,24 @@ async function decodeImageFlow(info, tab) {
   }
 
   // Screenshot fallback. Rects from cross-origin iframes are relative to the
-  // iframe viewport, so only crop for the top frame; otherwise scan it all.
+  // iframe viewport, so only crop for the top frame; otherwise scan the whole
+  // visible tab. Full-tab results are flagged so the card can say the code
+  // was found on the visible tab, not read from the image itself.
   const shot = await captureTab(tab.windowId);
   if (shot) {
     const rect = frameId === 0 && located ? located : null;
-    const result = await decodeFromCapture(shot, rect);
-    if (result) return showResult(tab.id, success(result, 'image'));
+    if (rect) {
+      const result = await decodeFromCapture(shot, rect);
+      if (result) return showResult(tab.id, success(result, 'image'));
+    }
+    const full = await decodeFromCapture(shot, null);
+    if (full) return showResult(tab.id, success(full, 'image', true));
   }
 
+  if (!shot && !located) {
+    // Neither injecting nor capturing worked: the page blocked us.
+    return showResult(tab.id, failure('image', 'blocked'));
+  }
   return showResult(tab.id, failure('image'));
 }
 
@@ -115,6 +151,9 @@ async function startAreaSelect(tabId) {
 }
 
 async function decodeAreaFlow(msg, tabId) {
+  // The user selected a region: decode that region only. No full-capture
+  // fallback here — it could surface an unrelated QR code from elsewhere on
+  // the page, outside the box the user drew.
   const tab = await chrome.tabs.get(tabId);
   const shot = await captureTab(tab.windowId);
   if (shot) {
@@ -189,9 +228,10 @@ async function showResult(tabId, result) {
     await chrome.tabs.sendMessage(tabId, { type: 'qrgenie:show-result', result });
   } catch (_) {
     // Restricted page (chrome://, Web Store, PDF viewer): use our own page.
-    const hash = encodeURIComponent(JSON.stringify(result));
+    // The payload stays in worker memory; the viewer asks for it on load.
+    pendingViewerResult = result;
     await chrome.tabs.create({
-      url: chrome.runtime.getURL('viewer/viewer.html') + '#' + hash
+      url: chrome.runtime.getURL('viewer/viewer.html')
     });
   }
 }
@@ -204,13 +244,13 @@ function reportFailure(tabId, source, err) {
 // ---------------------------------------------------------------------------
 // Decoding
 
-function success(text, source) {
+function success(text, source, fromVisibleTab) {
   const payload = QRGeniePayload.classify(text);
-  return { ok: true, source, payload };
+  return { ok: true, source, payload, fromVisibleTab: !!fromVisibleTab };
 }
 
-function failure(source) {
-  return { ok: false, source };
+function failure(source, reason) {
+  return { ok: false, source, reason: reason || null };
 }
 
 async function captureTab(windowId) {
@@ -232,36 +272,23 @@ async function decodeFromDataUrl(dataUrl) {
 }
 
 /*
- * Decodes a full-tab capture, optionally cropped to a CSS-pixel rect. The
- * capture is in device pixels; the page reports its CSS viewport size, so
- * the scale factor is derived from the two rather than trusting
- * devicePixelRatio (page zoom changes it).
+ * Decodes a full-tab capture, optionally cropped to a CSS-pixel rect (the
+ * rect-to-pixel mapping lives in common/crop.js, where it is unit-tested).
+ * With a rect, only the cropped region is decoded — never the rest of the
+ * capture; callers that want a full-tab scan pass rect = null explicitly.
  */
 async function decodeFromCapture(captureDataUrl, rect) {
   try {
     const blob = await (await fetch(captureDataUrl)).blob();
     const bitmap = await createImageBitmap(blob);
 
-    if (!rect || !(rect.w > 0) || !(rect.h > 0)) {
-      return decodeBitmap(bitmap);
-    }
+    if (!rect) return decodeBitmap(bitmap);
 
-    const scale = rect.vw > 0 ? bitmap.width / rect.vw : 1;
-    let x = Math.max(0, Math.floor(rect.x * scale));
-    let y = Math.max(0, Math.floor(rect.y * scale));
-    let w = Math.min(bitmap.width - x, Math.ceil(rect.w * scale));
-    let h = Math.min(bitmap.height - y, Math.ceil(rect.h * scale));
-    if (w < 4 || h < 4) return decodeBitmap(bitmap);
+    const crop = QRGenieCrop.mapCaptureRect(bitmap.width, bitmap.height, rect);
+    if (!crop) return null;
 
-    // A little margin helps jsQR find the quiet zone around the code.
-    const pad = Math.round(Math.min(w, h) * 0.05) + 4;
-    x = Math.max(0, x - pad);
-    y = Math.max(0, y - pad);
-    w = Math.min(bitmap.width - x, w + pad * 2);
-    h = Math.min(bitmap.height - y, h + pad * 2);
-
-    const cropped = await createImageBitmap(bitmap, x, y, w, h);
-    return decodeBitmap(cropped) || decodeBitmap(bitmap);
+    const cropped = await createImageBitmap(bitmap, crop.x, crop.y, crop.w, crop.h);
+    return decodeBitmap(cropped);
   } catch (_) {
     return null;
   }

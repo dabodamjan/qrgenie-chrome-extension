@@ -1,14 +1,17 @@
 /*
  * Fallback result page, used when the extension cannot inject its overlay
  * into the page (chrome:// pages, the Web Store, the PDF viewer). The result
- * travels in the URL fragment so nothing is stored anywhere.
+ * is collected from the service worker with a read-once message, so decoded
+ * content (Wi-Fi passwords, OTP secrets) never appears in the URL or in any
+ * stored state.
  */
-(() => {
+(async () => {
   const body = document.getElementById('body');
 
   let result = null;
   try {
-    result = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+    const reply = await chrome.runtime.sendMessage({ type: 'qrgenie:get-result' });
+    result = reply && reply.result;
   } catch (_) {}
 
   function el(tag, className, text) {
@@ -18,11 +21,30 @@
     return node;
   }
 
-  if (!result || !result.ok) {
-    body.appendChild(el('div', null, 'We could not find a QR code there.'));
+  if (!result) {
+    body.appendChild(el('div', null, 'No scan result to show.'));
     body.appendChild(
-      el('div', 'hint', 'Try zooming the page so the code appears larger, then scan again.')
+      el('div', 'hint', 'Results appear here right after a scan; this page does not keep them.')
     );
+    return;
+  }
+
+  if (!result.ok) {
+    if (result.reason === 'blocked') {
+      body.appendChild(el('div', null, 'Chrome does not let extensions scan this page.'));
+      body.appendChild(
+        el(
+          'div',
+          'hint',
+          'Its own pages, the Web Store and the built-in PDF viewer are off limits. Try the scan on a regular website.'
+        )
+      );
+    } else {
+      body.appendChild(el('div', null, 'We could not find a QR code there.'));
+      body.appendChild(
+        el('div', 'hint', 'Try zooming the page so the code appears larger, then scan again.')
+      );
+    }
     return;
   }
 
@@ -39,6 +61,16 @@
       ul.appendChild(li);
     }
     body.appendChild(ul);
+  }
+
+  if (result.fromVisibleTab) {
+    body.appendChild(
+      el(
+        'div',
+        'hint',
+        'The image itself could not be read, so this code was found on the visible part of the tab.'
+      )
+    );
   }
 
   const actions = el('div', 'actions');

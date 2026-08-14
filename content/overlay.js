@@ -6,7 +6,7 @@
 (() => {
   if (window.__qrgenieOverlay) return;
 
-  const state = { host: null };
+  const state = { host: null, root: null };
 
   const CSS = `
     :host { all: initial; }
@@ -134,6 +134,7 @@
     if (state.host) {
       state.host.remove();
       state.host = null;
+      state.root = null;
       document.removeEventListener('keydown', onKey, true);
     }
   }
@@ -152,11 +153,15 @@
       setTimeout(() => { btn.textContent = old; }, 1200);
     };
     navigator.clipboard.writeText(text).then(done, () => {
+      // The textarea stays inside our closed shadow root: putting it in the
+      // page's light DOM would let a hostile page's MutationObserver read
+      // the payload (Wi-Fi password, OTP secret) before it is removed.
+      if (!state.root) return;
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
-      document.body.appendChild(ta);
+      state.root.appendChild(ta);
       ta.select();
       try { document.execCommand('copy'); done(); } catch (_) {}
       ta.remove();
@@ -183,14 +188,22 @@
       const fields = (p.fields || [])
         .map((f) => `<li><span class="k">${esc(f.name)}</span><span class="v">${esc(f.value)}</span></li>`)
         .join('');
+      const origin = result.fromVisibleTab
+        ? '<div class="hint">The image itself could not be read, so this code was found on the visible part of the tab.</div>'
+        : '';
       bodyHtml = `
         <span class="chip">${esc(p.label)}</span>
         <div class="raw">${esc(p.raw)}</div>
         ${fields ? `<ul class="fields">${fields}</ul>` : ''}
+        ${origin}
         <div class="actions">
           <button class="btn" data-act="copy">Copy</button>
           ${p.url ? '<button class="btn primary" data-act="open">Open link</button>' : ''}
         </div>`;
+    } else if (result.reason === 'blocked') {
+      bodyHtml = `
+        <div class="error">Chrome does not let extensions scan this page.</div>
+        <div class="hint">Its own pages, the Web Store and the built-in PDF viewer are off limits. Try the scan on a regular website.</div>`;
     } else {
       const what = result.source === 'area' ? 'in that area' : 'in this image';
       bodyHtml = `
@@ -220,6 +233,7 @@
     root.appendChild(card);
     (document.body || document.documentElement).appendChild(host);
     state.host = host;
+    state.root = root;
     document.addEventListener('keydown', onKey, true);
   }
 
