@@ -23,14 +23,14 @@
       inset: 0;
       z-index: 2147483647;
       cursor: crosshair;
-      background: rgba(10, 14, 28, 0.35);
+      background: rgba(0, 32, 33, 0.4);
     }
     .hint {
       position: fixed;
       top: 18px;
       left: 50%;
       transform: translateX(-50%);
-      background: #1d2230;
+      background: #003c3d;
       color: #fff;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 13px;
@@ -42,9 +42,9 @@
     }
     .box {
       position: fixed;
-      border: 2px solid #0fb5ba;
-      background: rgba(15, 181, 186, 0.12);
-      box-shadow: 0 0 0 4000px rgba(10, 14, 28, 0.35);
+      border: 2px solid #1fd3d6;
+      background: rgba(31, 211, 214, 0.12);
+      box-shadow: 0 0 0 4000px rgba(0, 32, 33, 0.4);
       display: none;
       pointer-events: none;
     }
