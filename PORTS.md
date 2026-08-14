@@ -15,7 +15,7 @@ should be confirmed against the linked page before first submission.
 | Manifest key used | `background.service_worker` | `background.service_worker` | `background.scripts` |
 | Promise-style APIs | `chrome.*` | `chrome.*` | guaranteed only on `browser.*` |
 | Store package | `dist/qr-decoder-chrome-*.zip` | `dist/qr-decoder-edge-*.zip` | `dist/qr-decoder-firefox-*.zip` |
-| Minimum version | 121 (see below) | Chromium 121 equivalent | 140 (`strict_min_version`) |
+| Minimum version | 123 (`minimum_chrome_version`, see below) | Chromium 123 equivalent | 140 (`strict_min_version`) |
 
 Three code-level accommodations, all in place:
 
@@ -103,13 +103,13 @@ npm run build firefox    # one target
 the browser loads (plus the license files); tests, docs and scripts stay out.
 Per-target manifest: Chrome and Edge get the repo manifest minus
 `background.scripts` and `browser_specific_settings`; Firefox gets it minus
-`background.service_worker`. So store validators only ever see keys their
+`background.service_worker` and `minimum_chrome_version`. So store validators only ever see keys their
 browser reads — whether the Chrome Web Store or Partner Center tolerate the
 extra keys is **UNVERIFIED**, and stripping them makes the question moot.
 
 For development, the repo root itself loads unpacked in all three browsers
-(Chrome/Edge ≥121 ignore the extra keys; Firefox ignores `service_worker`):
-see README → Install.
+(Chrome/Edge ≥123 per `minimum_chrome_version`; Firefox ignores
+`service_worker` and warns about the Chrome-only keys): see README → Install.
 
 ## Firefox Add-ons (AMO) submission
 
@@ -187,9 +187,20 @@ Submission portal: Partner Center,
 
 The Chrome package is byte-identical in behavior to v1; `npm run build`
 merely strips the two keys Chrome ignores anyway. Chrome's one-time $5
-developer fee and listing flow are as before (STORE_LISTING.md). Note the
-code now requires Chrome ≥121 (dual background key tolerance) — Chrome 121
-shipped January 2024, far below any realistic user floor.
+developer fee and listing flow are as before (STORE_LISTING.md). The manifest
+now declares `minimum_chrome_version: "123"`, covering two stacked floors:
+
+- **121** — first Chrome to tolerate the dual `background` key; ≤120 rejects
+  a manifest carrying `background.scripts` outright.
+- **123** — first Chrome where `chrome.contextMenus` methods return promises.
+  `background.js` calls `contextMenus.removeAll().then(...)`; on 121–122 that
+  call returns undefined and the menus are never recreated. **UNVERIFIED
+  live** (this session had no reach to developer.chrome.com) — the version
+  comes from an external cross-model review citing the API reference; confirm
+  at <https://developer.chrome.com/docs/extensions/reference/api/contextMenus>
+  if it ever matters. `test/manifest.test.js` pins the declared floor.
+
+Chrome 123 shipped March 2024, far below any realistic user floor.
 
 ## Still open before submission
 

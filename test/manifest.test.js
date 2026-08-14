@@ -46,6 +46,14 @@ test('gecko settings satisfy AMO submission requirements', () => {
   assert.deepStrictEqual(gecko.data_collection_permissions.required, ['none']);
 });
 
+test('chrome floor covers both port constraints', () => {
+  // 121 is the first Chrome that tolerates the dual background key (≤120
+  // rejects a manifest with background.scripts); 123 is the first where
+  // chrome.contextMenus methods return promises, which background.js relies
+  // on (removeAll().then). The declared floor must cover both. See PORTS.md.
+  assert.strictEqual(manifest.minimum_chrome_version, '123');
+});
+
 test('permissions stay minimal', () => {
   assert.deepStrictEqual(manifest.permissions, ['contextMenus', 'activeTab', 'scripting']);
   assert.strictEqual(manifest.host_permissions, undefined);
