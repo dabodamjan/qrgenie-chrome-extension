@@ -146,26 +146,53 @@
     }
   }
 
+  // Original button labels, so repeated clicks never leave a flash label
+  // ('Copied', 'Copy failed') as the button's resting text.
+  const labels = new WeakMap();
+  const flashTimers = new WeakMap();
+
+  function flash(btn, label) {
+    if (!labels.has(btn)) labels.set(btn, btn.textContent);
+    btn.textContent = label;
+    clearTimeout(flashTimers.get(btn));
+    flashTimers.set(
+      btn,
+      setTimeout(() => { btn.textContent = labels.get(btn); }, 1200)
+    );
+  }
+
   function copyText(text, btn) {
-    const done = () => {
-      const old = btn.textContent;
-      btn.textContent = 'Copied';
-      setTimeout(() => { btn.textContent = old; }, 1200);
-    };
-    navigator.clipboard.writeText(text).then(done, () => {
+    const fallback = () => {
       // The textarea stays inside our closed shadow root: putting it in the
       // page's light DOM would let a hostile page's MutationObserver read
       // the payload (Wi-Fi password, OTP secret) before it is removed.
-      if (!state.root) return;
+      if (!state.root) return flash(btn, 'Copy failed');
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       state.root.appendChild(ta);
       ta.select();
-      try { document.execCommand('copy'); done(); } catch (_) {}
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
       ta.remove();
-    });
+      // execCommand returns false when the page or the browser refuses the
+      // copy; saying "Copied" then would be a lie. The raw payload above the
+      // button stays selectable either way.
+      flash(btn, ok ? 'Copied' : 'Copy failed');
+    };
+
+    // navigator.clipboard is absent outside secure contexts and in some
+    // embedders, so it cannot be dereferenced before the fallback is reachable.
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== 'function') return fallback();
+    let pending;
+    try {
+      pending = clipboard.writeText(text);
+    } catch (_) {
+      return fallback();
+    }
+    Promise.resolve(pending).then(() => flash(btn, 'Copied'), fallback);
   }
 
   function show(result) {
