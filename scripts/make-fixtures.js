@@ -52,9 +52,13 @@ const FIXTURES = [
  * Stylized variants, rendered from the module matrix of a clean fixture:
  *   dots.png    modules as circles at ~70% of the cell (gapped, "dot style")
  *   rounded.png modules as rounded squares at ~90% of the cell
- *   skewed.png  a clean render pushed through a mild perspective warp
- * These defeat a plain jsQR pass and are the regression set for the
- * preprocessing ladder in common/preprocess.js.
+ *   skewed.png  a clean render pushed through a mild perspective warp, then
+ *               contrast-compressed into an 18-level gray range — below
+ *               jsQR's binarizer MIN_DYNAMIC_RANGE (24), so plain jsQR
+ *               whites every block out and only a global re-threshold (the
+ *               ladder's Otsu rungs) recovers the code
+ * Each of these must FAIL a plain jsQR pass (the tests assert it) and decode
+ * through the preprocessing ladder in common/preprocess.js.
  */
 const STYLIZED = [
   { file: 'dots.png', from: 'url.png', scale: 8, style: 'dots' },
@@ -210,6 +214,18 @@ function warpPerspective(gray, size) {
   return out;
 }
 
+// Maps full-range gray into [dark, light]. Keeping light - dark below
+// jsQR's MIN_DYNAMIC_RANGE (24) makes every binarizer block read as flat,
+// so a plain pass finds nothing while Otsu's global histogram still splits
+// the two modes cleanly.
+function compressContrast(gray, dark, light) {
+  const out = Buffer.alloc(gray.length);
+  for (let i = 0; i < gray.length; i++) {
+    out[i] = Math.round(dark + (gray[i] / 255) * (light - dark));
+  }
+  return out;
+}
+
 function makeStylized(spec) {
   const matrix = matrixFromPng(spec.from, spec.scale);
   const cell = 10;
@@ -222,9 +238,10 @@ function makeStylized(spec) {
     const { gray, size } = renderShaped(matrix, cell, margin, inRounded);
     return grayToPng(gray, size, size);
   }
-  // skew: clean square modules, then the perspective warp.
+  // skew: clean square modules, the perspective warp, then low contrast so
+  // the warped code cannot decode without the ladder's re-threshold.
   const { gray, size } = renderShaped(matrix, cell, margin, () => true);
-  return grayToPng(warpPerspective(gray, size), size, size);
+  return grayToPng(compressContrast(warpPerspective(gray, size), 110, 128), size, size);
 }
 
 // A gradient with circles and no QR code, for the negative test.
