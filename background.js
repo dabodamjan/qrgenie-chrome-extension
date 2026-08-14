@@ -342,7 +342,9 @@ function decodeBitmap(bitmap) {
   if (size < 300) attempts.push(3);
   else if (size > 1400) attempts.push(900 / size);
 
-  const images = [];
+  // Only the most recent attempt's pixels are kept for the ladder; holding
+  // every scale would pin tens of MiB for a 4K capture.
+  let last = null;
   for (const scale of attempts) {
     const w = Math.max(1, Math.round(bitmap.width * scale));
     const h = Math.max(1, Math.round(bitmap.height * scale));
@@ -350,12 +352,12 @@ function decodeBitmap(bitmap) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingEnabled = scale < 1;
     ctx.drawImage(bitmap, 0, 0, w, h);
-    const imageData = ctx.getImageData(0, 0, w, h);
-    images.push(imageData);
-    const code = jsQR(imageData.data, w, h, { inversionAttempts: 'attemptBoth' });
+    last = ctx.getImageData(0, 0, w, h);
+    const code = jsQR(last.data, w, h, { inversionAttempts: 'attemptBoth' });
     if (code && code.data) return code.data;
   }
 
-  // The last entry is the normalized one whenever a second scale was tried.
-  return QRGeniePreprocess.decodeLadder(images[images.length - 1], jsQR);
+  // `last` is the normalized image whenever a second scale was tried, and
+  // plain jsQR just failed on those exact pixels — skip the ladder's rung 0.
+  return QRGeniePreprocess.decodeLadder(last, jsQR, { skipPlain: true });
 }
