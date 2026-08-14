@@ -29,15 +29,17 @@ test('doubles coordinates on a 2x display', () => {
 });
 
 test('handles a fractional zoom (scale 1.25) with fractional CSS coords', () => {
+  // Far edge lands on 375.5 device px; the crop has to reach 376, not 375.
   const crop = mapCaptureRect(1250, 1000, { x: 100.4, y: 50.6, w: 200, h: 100, vw: 1000 });
-  assert.deepStrictEqual(crop, { x: 115, y: 53, w: 270, h: 145 });
+  assert.deepStrictEqual(crop, { x: 115, y: 53, w: 271, h: 146 });
   assertContains(crop, 1250, 1000, 125, 63, 250, 125);
 });
 
 test('handles an uneven fractional zoom (scale 1.1)', () => {
-  // 50 * 1.1 is 55.000000000000007 in floats; ceil rounds it up to 56.
+  // Both edges are scaled and rounded outward, so float noise in the
+  // multiplication can only ever grow the crop, never clip the region.
   const crop = mapCaptureRect(1100, 900, { x: 10, y: 20, w: 50, h: 60, vw: 1000 });
-  assert.deepStrictEqual(crop, { x: 4, y: 15, w: 70, h: 80 });
+  assert.deepStrictEqual(crop, { x: 4, y: 15, w: 69, h: 80 });
   assertContains(crop, 1100, 900, 11, 22, 55, 66);
 });
 
@@ -48,9 +50,19 @@ test('clamps a rect that reaches past the capture edge', () => {
   assert.ok(crop.y + crop.h <= 800);
 });
 
-test('clamps a rect that starts off screen', () => {
+test('keeps only the visible part of a rect that starts off screen', () => {
+  // Visible region is x 0..70, y 0..90. Clamping the near edge to 0 and then
+  // applying the full width would stretch the crop to 100x100 plus padding.
   const crop = mapCaptureRect(1000, 800, { x: -30, y: -10, w: 100, h: 100, vw: 1000 });
-  assert.deepStrictEqual(crop, { x: 0, y: 0, w: 118, h: 118 });
+  assert.deepStrictEqual(crop, { x: 0, y: 0, w: 86, h: 106 });
+});
+
+test('does not expand a rect hanging off the left past its far edge', () => {
+  const crop = mapCaptureRect(1000, 800, { x: -30, y: 100, w: 100, h: 100, vw: 1000 });
+  // On screen the rect ends at x = 70; only the quiet-zone padding goes beyond.
+  assert.deepStrictEqual(crop, { x: 0, y: 92, w: 86, h: 116 });
+  assert.ok(crop.x + crop.w < 100, 'crop stops near the visible far edge');
+  assertContains(crop, 1000, 800, 0, 100, 70, 100);
 });
 
 test('falls back to scale 1 when the viewport width is missing', () => {
