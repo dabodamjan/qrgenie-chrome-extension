@@ -89,7 +89,7 @@ Private by design:
 
 - Decoding happens entirely on your device, using a well-known open source decoder (jsQR) bundled with the extension.
 - Decoding never makes a network request. Your pages, images and decoded results never leave your browser; the only network activity the extension can cause is navigation you choose yourself, such as opening a decoded link.
-- No analytics, no tracking, no accounts, no stored data — and the add-on formally declares "no data collection" to Firefox, so the install prompt says exactly that.
+- No analytics, no tracking, no accounts, no stored data. The add-on also formally declares "no data collection" to Firefox, so the install prompt says exactly that.
 - No host permissions. The extension can only see a page after you invoke it there, through the activeTab permission.
 
 To find the code, the extension captures an image of the visible tab on your device. That capture is processed locally, stays in memory and is discarded right after decoding.
