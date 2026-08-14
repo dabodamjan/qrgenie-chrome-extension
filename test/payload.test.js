@@ -118,6 +118,51 @@ test('otpauth payloads get their own label without an openable url', () => {
   assert.strictEqual(p.url, undefined);
 });
 
+test('malformed mailto percent-encoding falls back to the raw address', () => {
+  const p = classify('mailto:%');
+  assert.strictEqual(p.kind, 'email');
+  assert.deepStrictEqual(p.fields, [{ name: 'To', value: '%' }]);
+
+  const p2 = classify('mailto:%E0%A4%A@example.com?subject=Hi');
+  assert.strictEqual(p2.kind, 'email');
+  assert.deepStrictEqual(p2.fields, [{ name: 'To', value: '%E0%A4%A@example.com' }]);
+});
+
+test('classify never throws and round-trips hostile payloads as inert data', () => {
+  const hostile = [
+    'mailto:%',
+    'mailto:%zz?subject=%',
+    'WIFI:',
+    'WIFI:T:WPA;S:',
+    'WIFI:S:truncated',
+    'WIFI:S:<script>alert(1)</script>;P:%;;',
+    '%E0%A4%A',
+    '%%%%%%',
+    '<img src=x onerror=alert(1)>',
+    '<script>alert(document.cookie)</script>'
+  ];
+  for (const raw of hostile) {
+    let p;
+    assert.doesNotThrow(() => { p = classify(raw); }, raw + ' must not throw');
+    assert.strictEqual(p.raw, raw, raw + ' must round-trip unchanged');
+    assert.strictEqual(p.url, undefined, raw + ' must not be openable');
+    assert.ok(typeof p.kind === 'string' && typeof p.label === 'string');
+  }
+});
+
+test('html-ish payloads classify as plain text, not markup', () => {
+  const p = classify('<img src=x onerror=alert(1)>');
+  assert.strictEqual(p.kind, 'text');
+  assert.strictEqual(p.raw, '<img src=x onerror=alert(1)>');
+  assert.deepStrictEqual(p.fields, []);
+});
+
+test('truncated wifi payloads keep whatever fields are parseable', () => {
+  assert.deepStrictEqual(classify('WIFI:').fields, []);
+  const p = classify('WIFI:S:truncated');
+  assert.deepStrictEqual(p.fields, [{ name: 'Network', value: 'truncated' }]);
+});
+
 test('anything else is plain text', () => {
   const p = classify('just some words');
   assert.strictEqual(p.kind, 'text');

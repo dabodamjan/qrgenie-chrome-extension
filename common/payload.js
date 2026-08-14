@@ -70,8 +70,13 @@
     if (lower.startsWith('mailto:')) {
       const rest = raw.slice(7);
       const q = rest.indexOf('?');
-      const addr = q === -1 ? rest : rest.slice(0, q);
-      const fields = addr ? [{ name: 'To', value: decodeURIComponent(addr) }] : [];
+      let addr = q === -1 ? rest : rest.slice(0, q);
+      try {
+        addr = decodeURIComponent(addr);
+      } catch (_) {
+        // Malformed percent-encoding: show the address as written.
+      }
+      const fields = addr ? [{ name: 'To', value: addr }] : [];
       return { kind: 'email', label: 'Email address', raw, fields };
     }
 
