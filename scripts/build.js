@@ -43,6 +43,7 @@ const TARGETS = {
   },
   firefox: (manifest) => {
     delete manifest.background.service_worker;
+    delete manifest.minimum_chrome_version;
     return manifest;
   },
   edge: (manifest) => {
@@ -71,15 +72,21 @@ function build(target) {
 
   const zipName = `qr-decoder-${target}-${manifest.version}.zip`;
   const zipPath = path.join(DIST, zipName);
+  // Zip to a temp name and rename on success, so a failure part-way through
+  // never leaves a corrupt release-named file in dist/.
+  const partPath = zipPath + '.part';
   fs.rmSync(zipPath, { force: true });
+  fs.rmSync(partPath, { force: true });
   // -X: no platform extra fields (resource forks etc.) in the archive.
-  const zip = spawnSync('zip', ['-r', '-X', '-q', zipPath, '.'], { cwd: outDir });
+  const zip = spawnSync('zip', ['-r', '-X', '-q', partPath, '.'], { cwd: outDir });
   if (zip.error || zip.status !== 0) {
+    fs.rmSync(partPath, { force: true });
     console.error(`${target}: staged ${path.relative(ROOT, outDir)}, but zip failed` +
       (zip.error ? ` (${zip.error.message})` : ''));
     console.error(`  package it manually: cd ${path.relative(ROOT, outDir)} && zip -r -X ../${zipName} .`);
     return false;
   }
+  fs.renameSync(partPath, zipPath);
   const kb = Math.round(fs.statSync(zipPath).size / 1024);
   console.log(`${target}: dist/${zipName} (${kb} KB)`);
   return true;
