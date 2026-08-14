@@ -11,6 +11,7 @@
       "vendor/jsQR.js",
       "common/payload.js",
       "common/crop.js",
+      "common/preprocess.js",
       "background.js"
     ]
   },

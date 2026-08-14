@@ -19,7 +19,7 @@
 // there is no importScripts (the background is an event page) and the same
 // files come first in the manifest's background.scripts list instead.
 if (typeof importScripts === 'function') {
-  importScripts('vendor/jsQR.js', 'common/payload.js', 'common/crop.js');
+  importScripts('vendor/jsQR.js', 'common/payload.js', 'common/crop.js', 'common/preprocess.js');
 }
 
 // Firefox only guarantees promise-style calls on browser.*; Chrome and Edge
@@ -330,7 +330,11 @@ async function decodeFromCapture(captureDataUrl, rect) {
 /*
  * Runs jsQR over the bitmap, retrying at a different scale when the first
  * pass fails: small crops get upscaled (tiny modules), huge captures get
- * downscaled (jsQR's binarizer prefers moderate sizes).
+ * downscaled (jsQR's binarizer prefers moderate sizes). When plain decoding
+ * fails at every scale, the preprocessing ladder in common/preprocess.js
+ * gets one run on the size-normalized image — it recovers stylized codes
+ * (dot/gapped modules, rounded modules, mild perspective) that QRGenie's own
+ * product generates and phone cameras read. Clean codes never reach it.
  */
 function decodeBitmap(bitmap) {
   const attempts = [1];
@@ -338,6 +342,7 @@ function decodeBitmap(bitmap) {
   if (size < 300) attempts.push(3);
   else if (size > 1400) attempts.push(900 / size);
 
+  const images = [];
   for (const scale of attempts) {
     const w = Math.max(1, Math.round(bitmap.width * scale));
     const h = Math.max(1, Math.round(bitmap.height * scale));
@@ -346,8 +351,11 @@ function decodeBitmap(bitmap) {
     ctx.imageSmoothingEnabled = scale < 1;
     ctx.drawImage(bitmap, 0, 0, w, h);
     const imageData = ctx.getImageData(0, 0, w, h);
+    images.push(imageData);
     const code = jsQR(imageData.data, w, h, { inversionAttempts: 'attemptBoth' });
     if (code && code.data) return code.data;
   }
-  return null;
+
+  // The last entry is the normalized one whenever a second scale was tried.
+  return QRGeniePreprocess.decodeLadder(images[images.length - 1], jsQR);
 }

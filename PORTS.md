@@ -28,7 +28,8 @@ Three code-level accommodations, all in place:
    (Firefox does not support `background.service_worker` at all — Bugzilla
    1573659.)
 2. **`importScripts` guard.** In the Chrome/Edge worker, `background.js` pulls
-   in jsQR, the payload classifier and the crop mapper via `importScripts`.
+   in jsQR, the payload classifier, the crop mapper and the preprocessing
+   ladder via `importScripts`.
    Firefox's event page has no `importScripts`, so the same files are listed
    before `background.js` in `background.scripts` and the call is skipped
    (`typeof importScripts === 'function'`). `test/manifest.test.js` pins the

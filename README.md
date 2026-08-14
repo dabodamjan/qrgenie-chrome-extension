@@ -51,6 +51,7 @@ manifest.json          Cross-browser Manifest V3 definition (see PORTS.md)
 background.js          Background script (service worker in Chrome/Edge,
                        event page in Firefox): menus, capture, decoding, routing
 common/payload.js      Classifies decoded payloads (URL, Wi-Fi, contact, ...)
+common/preprocess.js   Retry ladder for stylized codes (dots, rounded, skew)
 content/overlay.js     Result card, injected on demand
 content/area-select.js Drag-to-select overlay for the area scan
 popup/                 Toolbar popup
@@ -68,6 +69,6 @@ PORTS.md               Per-browser differences and store submission notes
 - `npm run check` syntax-checks every script.
 - `npm run build` stages `dist/<browser>/` and writes the three store zips (see PORTS.md).
 - `npm run make:icons` regenerates the icons (no dependencies).
-- `npm run make:fixtures` regenerates the fixtures; needs `npm install --no-save qrcode` first.
+- `npm run make:fixtures` regenerates the fixtures; the clean base fixtures need `npm install --no-save qrcode` first, the stylized variants regenerate from the committed clean PNGs without it.
 
 There is no build step for development. The files in the repository are exactly what the browser loads; `npm run build` only re-packages them per store.
