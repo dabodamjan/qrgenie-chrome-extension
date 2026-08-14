@@ -1,0 +1,12 @@
+{
+  "name": "qrgenie-qr-decoder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome extension that decodes QR codes on screen, entirely on your device.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check background.js && node --check common/payload.js && node --check content/overlay.js && node --check content/area-select.js && node --check popup/popup.js && node --check viewer/viewer.js && node --check scripts/make-icons.js && node --check scripts/make-fixtures.js",
+    "make:icons": "node scripts/make-icons.js",
+    "make:fixtures": "node scripts/make-fixtures.js"
+  }
+}
