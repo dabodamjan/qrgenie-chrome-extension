@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>QR Decoder by QRGenie</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="../icons/icon32.png" alt="" width="20" height="20">
+    <span>QR Decoder</span>
+  </header>
+  <main>
+    <button id="scan-area">Scan area for QR code</button>
+    <p class="hint">Or right-click any image on a page and choose
+      <strong>Decode QR code in this image</strong>.</p>
+    <p class="error" id="error" hidden></p>
+  </main>
+  <footer>
+    <span>Decoded on your device</span>
+    <a href="https://qrgenie.app" target="_blank" rel="noopener">Made by QRGenie</a>
+  </footer>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>QR code result</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      color: #1a2333;
+      background: #f4f6fa;
+    }
+    .card {
+      width: 420px;
+      max-width: calc(100vw - 32px);
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 8px 30px rgba(20, 25, 60, 0.15);
+      overflow: hidden;
+    }
+    .top {
+      padding: 12px 16px;
+      background: linear-gradient(120deg, #0fb5ba, #7c5cff);
+      color: #fff;
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .body { padding: 16px; }
+    .chip {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      color: #0b8f93;
+      background: rgba(15, 181, 186, 0.12);
+      border-radius: 999px;
+      padding: 2px 9px;
+      margin-bottom: 8px;
+    }
+    .raw {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      background: #f4f6fa;
+      border-radius: 8px;
+      padding: 8px 10px;
+      max-height: 200px;
+      overflow: auto;
+      word-break: break-all;
+      white-space: pre-wrap;
+      user-select: all;
+    }
+    .fields { margin: 8px 0 0; padding: 0; list-style: none; }
+    .fields li { display: flex; gap: 8px; margin-top: 4px; font-size: 12.5px; }
+    .fields .k { color: #66708a; flex: none; min-width: 70px; }
+    .actions { display: flex; gap: 8px; margin-top: 14px; }
+    .btn {
+      all: unset;
+      cursor: pointer;
+      flex: 1;
+      text-align: center;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      background: #eef0f6;
+      box-sizing: border-box;
+    }
+    .btn.primary { background: linear-gradient(120deg, #0fb5ba, #7c5cff); color: #fff; }
+    .hint { color: #66708a; font-size: 12.5px; margin-top: 6px; }
+    .foot {
+      padding: 9px 16px;
+      border-top: 1px solid #eef0f6;
+      font-size: 11.5px;
+      color: #66708a;
+      display: flex;
+      justify-content: space-between;
+    }
+    .foot a { color: #0b8f93; text-decoration: none; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #141826; color: #e8ebf3; }
+      .card { background: #1d2230; }
+      .raw { background: #141826; }
+      .btn { background: #2a3044; color: #e8ebf3; }
+      .fields .k, .hint, .foot { color: #9aa3ba; }
+      .foot { border-top-color: #2a3044; }
+      .chip { color: #3fd4d9; background: rgba(15, 181, 186, 0.16); }
+      .foot a { color: #3fd4d9; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">QR code result</div>
+    <div class="body" id="body"></div>
+    <div class="foot"><span>Decoded on your device</span>
+      <a href="https://qrgenie.app" target="_blank" rel="noopener">Made by QRGenie</a></div>
+  </div>
+  <script src="viewer.js"></script>
+</body>
+</html>
