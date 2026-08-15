@@ -66,7 +66,7 @@ PORTS.md               Per-browser differences and store submission notes
 
 ## Development
 
-- `npm test` runs the test suite (Node 18 or newer, no dependencies): jsQR against the committed fixture images, the payload classifier, the cross-browser manifest invariants, and the message protocol between the background script and the injected overlay.
+- `npm test` runs the test suite (Node 18 or newer, no dependencies): jsQR against the committed fixture images, the payload classifier, the cross-browser manifest invariants, and the message protocol between the background script and the injected overlay, with the overlay itself running against a small DOM stub so two overlapping scans in one tab are tested for real.
 - `npm run check` syntax-checks every script.
 - `npm run build` stages `dist/<browser>/` and writes the three store zips (see PORTS.md).
 - `npm run make:icons` regenerates the icons (no dependencies).
