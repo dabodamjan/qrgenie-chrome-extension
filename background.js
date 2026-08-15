@@ -11,6 +11,10 @@
  *   3. Screenshot of the visible tab, cropped to the image's on-screen rect.
  * The area scan always uses the screenshot path.
  *
+ * Both flows show a decoding indicator on the page while they work (it lives
+ * in content/overlay.js, next to the result card that replaces it), and take
+ * it off screen around captures so it never lands in a decoded image.
+ *
  * Nothing here talks to the network: captureVisibleTab and data: URLs are
  * local, and the vendored jsQR runs in this worker.
  */
@@ -128,6 +132,10 @@ async function decodeImageFlow(info, tab) {
   const frameId = info.frameId || 0;
   let located = null;
 
+  // Every attempt below can run the preprocessing ladder, which takes a second
+  // or two on a stylized code, so the page says so from the start.
+  await showBusy(tab.id, 'image');
+
   if (info.srcUrl && info.srcUrl.startsWith('data:')) {
     const result = await decodeFromDataUrl(info.srcUrl);
     if (result) return showResult(tab.id, success(result, 'image'));
@@ -149,7 +157,7 @@ async function decodeImageFlow(info, tab) {
   // iframe viewport, so only crop for the top frame; otherwise scan the whole
   // visible tab. Full-tab results are flagged so the card can say the code
   // was found on the visible tab, not read from the image itself.
-  const shot = await captureTab(tab.windowId);
+  const shot = await captureTabForDecode(tab.id, tab.windowId);
   if (shot) {
     const rect = frameId === 0 && located ? located : null;
     if (rect) {
@@ -179,7 +187,11 @@ async function decodeAreaFlow(msg, tabId) {
   // fallback here — it could surface an unrelated QR code from elsewhere on
   // the page, outside the box the user drew.
   const tab = await api.tabs.get(tabId);
-  const shot = await captureTab(tab.windowId);
+  // Capture first, then raise the indicator: the capture is what the user just
+  // framed, and taking it before anything is drawn keeps this scan's own
+  // indicator out of it for free.
+  const shot = await captureTabForDecode(tabId, tab.windowId);
+  await showBusy(tabId, 'area');
   if (shot) {
     const result = await decodeFromCapture(shot, msg);
     if (result) return showResult(tabId, success(result, 'area'));
@@ -241,6 +253,52 @@ function locateImage(tabId, frameId, srcUrl) {
       args: [srcUrl]
     })
     .then((results) => (results && results[0] ? results[0].result : null));
+}
+
+/*
+ * Puts the decoding indicator on the page. Best effort: a page that blocks
+ * injection also blocks the result card, and that path opens the viewer tab
+ * instead, so a failure here needs no handling. Every flow ends in showResult,
+ * which clears the indicator, and the overlay drops it on its own if this
+ * script dies mid-decode.
+ */
+async function showBusy(tabId, source) {
+  try {
+    await api.scripting.executeScript({
+      target: { tabId },
+      files: ['content/overlay.js']
+    });
+    await api.tabs.sendMessage(tabId, { type: 'qrgenie:show-busy', source });
+  } catch (_) {
+    // Restricted page, or the tab went away. Decoding carries on regardless.
+  }
+}
+
+/*
+ * Captures the visible tab with our own UI hidden, so neither the indicator
+ * nor a card left over from an earlier scan ends up in the pixels we decode.
+ * The overlay answers the first message only once the page has painted
+ * without them.
+ */
+async function captureTabForDecode(tabId, windowId) {
+  await sendToPage(tabId, { type: 'qrgenie:hide-for-capture' });
+  try {
+    return await captureTab(windowId);
+  } finally {
+    await sendToPage(tabId, { type: 'qrgenie:restore-after-capture' });
+  }
+}
+
+/*
+ * Best-effort message to the overlay. It rejects when nothing is injected
+ * (restricted page, tab closed) and can hang when a page is wedged, and
+ * neither may stall a decode, so both resolve to nothing.
+ */
+function sendToPage(tabId, msg) {
+  return Promise.race([
+    api.tabs.sendMessage(tabId, msg).catch(() => null),
+    new Promise((resolve) => setTimeout(resolve, 500))
+  ]);
 }
 
 async function showResult(tabId, result) {
