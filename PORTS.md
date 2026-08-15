@@ -197,7 +197,7 @@ now declares `minimum_chrome_version: "123"`, covering two stacked floors:
   `background.js` calls `contextMenus.removeAll().then(...)`; on 121–122 that
   call returns undefined and the menus are never recreated. **UNVERIFIED
   live** (this session had no reach to developer.chrome.com) — the version
-  comes from an external cross-model review citing the API reference; confirm
+  comes from an external review citing the API reference; confirm
   at <https://developer.chrome.com/docs/extensions/reference/api/contextMenus>
   if it ever matters. `test/manifest.test.js` pins the declared floor.
 
