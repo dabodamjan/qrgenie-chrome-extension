@@ -8,6 +8,7 @@ Made by [QRGenie](https://qrgenie.app), our iOS QR code app. Everything decodes 
 
 - Right-click any image on a page and choose **Decode QR code in this image**.
 - Right-click anywhere (or use the toolbar popup) and choose **Scan area for QR code**, then drag a box around the code. This works for QR codes that are not images: video frames, canvas drawings, PDFs rendered in the page, shared screens.
+- While a scan runs, a small indicator sits in the top right of the page. Stylized codes (dots, rounded modules, mild skew) take a second or two because the extension retries them with several image treatments.
 - The result appears in a small card on the page with the decoded content, a **Copy** button and, for web links, an **Open link** button. Links are always shown in full first and never opened automatically.
 - Wi-Fi, contact, email, phone, SMS, location and calendar payloads are recognized and their fields shown.
 
@@ -52,7 +53,7 @@ background.js          Background script (service worker in Chrome/Edge,
                        event page in Firefox): menus, capture, decoding, routing
 common/payload.js      Classifies decoded payloads (URL, Wi-Fi, contact, ...)
 common/preprocess.js   Retry ladder for stylized codes (dots, rounded, skew)
-content/overlay.js     Result card, injected on demand
+content/overlay.js     Result card and decoding indicator, injected on demand
 content/area-select.js Drag-to-select overlay for the area scan
 popup/                 Toolbar popup
 viewer/                Fallback result page for pages we cannot inject into
@@ -65,7 +66,7 @@ PORTS.md               Per-browser differences and store submission notes
 
 ## Development
 
-- `npm test` runs the test suite (Node 18 or newer, no dependencies): jsQR against the committed fixture images, the payload classifier, and the cross-browser manifest invariants.
+- `npm test` runs the test suite (Node 18 or newer, no dependencies): jsQR against the committed fixture images, the payload classifier, the cross-browser manifest invariants, and the message protocol between the background script and the injected overlay. Both sides of that protocol run for real in the tests, the overlay against a small DOM stub and the background against a stubbed browser API, so two overlapping scans in one tab and the rules about when a screenshot may be taken are exercised rather than read off the source.
 - `npm run check` syntax-checks every script.
 - `npm run build` stages `dist/<browser>/` and writes the three store zips (see PORTS.md).
 - `npm run make:icons` regenerates the icons (no dependencies).
