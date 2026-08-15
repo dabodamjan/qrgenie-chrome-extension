@@ -3,9 +3,26 @@
   "name": "QR Decoder by QRGenie",
   "version": "1.0.0",
   "description": "Read QR codes on your screen. Right-click an image or select an area. Decoding happens on your device, nothing is sent anywhere.",
+  "minimum_chrome_version": "123",
   "permissions": ["contextMenus", "activeTab", "scripting"],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": [
+      "vendor/jsQR.js",
+      "common/payload.js",
+      "common/crop.js",
+      "common/preprocess.js",
+      "background.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "qr-decoder@qrgenie.app",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
   },
   "action": {
     "default_popup": "popup/popup.html",

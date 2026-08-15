@@ -1,5 +1,7 @@
 /*
- * Service worker: owns the context menus, all decoding, and result routing.
+ * Background script: owns the context menus, all decoding, and result routing.
+ * Runs as a service worker in Chrome and Edge, and as a non-persistent event
+ * page in Firefox (see PORTS.md).
  *
  * Decoding strategy, in order of image quality:
  *   1. data: image URLs decode directly from the URL (no page access needed).
@@ -12,7 +14,17 @@
  * Nothing here talks to the network: captureVisibleTab and data: URLs are
  * local, and the vendored jsQR runs in this worker.
  */
-importScripts('vendor/jsQR.js', 'common/payload.js', 'common/crop.js');
+
+// In the Chrome/Edge service worker the dependencies load here; in Firefox
+// there is no importScripts (the background is an event page) and the same
+// files come first in the manifest's background.scripts list instead.
+if (typeof importScripts === 'function') {
+  importScripts('vendor/jsQR.js', 'common/payload.js', 'common/crop.js', 'common/preprocess.js');
+}
+
+// Firefox only guarantees promise-style calls on browser.*; Chrome and Edge
+// provide them on chrome.*. Everything below awaits through this alias.
+const api = globalThis.browser ?? globalThis.chrome;
 
 const MENU_IMAGE = 'qrgenie-decode-image';
 const MENU_AREA = 'qrgenie-scan-area';
@@ -30,14 +42,17 @@ const MENU_AREA = 'qrgenie-scan-area';
 const pendingViewerResults = new Map();
 const MAX_PENDING_RESULTS = 8;
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
+api.runtime.onInstalled.addListener(() => {
+  // Promise-chained (not the callback form): browser.* APIs in Firefox take
+  // no callbacks. Both browsers persist menus created here across restarts
+  // for non-persistent backgrounds.
+  api.contextMenus.removeAll().then(() => {
+    api.contextMenus.create({
       id: MENU_IMAGE,
       title: 'Decode QR code in this image',
       contexts: ['image']
     });
-    chrome.contextMenus.create({
+    api.contextMenus.create({
       id: MENU_AREA,
       title: 'Scan area for QR code',
       contexts: ['page', 'image']
@@ -45,13 +60,14 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+api.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab || tab.id == null) return;
   if (info.menuItemId === MENU_IMAGE) {
     decodeImageFlow(info, tab).catch((err) => reportFailure(tab.id, 'image', err));
   } else if (info.menuItemId === MENU_AREA) {
     // If the selection overlay cannot be injected, the page blocked us
-    // (chrome://, Web Store, PDF viewer) — not a failed decode.
+    // (chrome:// and about: pages, extension stores, PDF viewer) — not a
+    // failed decode.
     startAreaSelect(tab.id).catch((err) => {
       console.warn('QRGenie area select blocked:', err);
       showResult(tab.id, failure('area', 'blocked'));
@@ -59,7 +75,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return false;
 
   if (msg.type === 'qrgenie:start-area') {
@@ -82,7 +98,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // pages qualify — content scripts run inside web pages and never need it.
     const fromExtensionPage =
       sender && typeof sender.url === 'string' &&
-      sender.url.startsWith(chrome.runtime.getURL(''));
+      sender.url.startsWith(api.runtime.getURL(''));
     const nonce = typeof msg.nonce === 'string' ? msg.nonce : '';
     if (fromExtensionPage && pendingViewerResults.has(nonce)) {
       sendResponse({ result: pendingViewerResults.get(nonce) });
@@ -97,7 +113,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Only plain web links ever get here (classify() vets them), but check
     // again since content scripts are less trusted than this worker.
     if (typeof msg.url === 'string' && /^https?:\/\//i.test(msg.url)) {
-      chrome.tabs.create({ url: msg.url });
+      api.tabs.create({ url: msg.url });
     }
     return false;
   }
@@ -152,7 +168,7 @@ async function decodeImageFlow(info, tab) {
 }
 
 async function startAreaSelect(tabId) {
-  await chrome.scripting.executeScript({
+  await api.scripting.executeScript({
     target: { tabId },
     files: ['content/area-select.js']
   });
@@ -162,7 +178,7 @@ async function decodeAreaFlow(msg, tabId) {
   // The user selected a region: decode that region only. No full-capture
   // fallback here — it could surface an unrelated QR code from elsewhere on
   // the page, outside the box the user drew.
-  const tab = await chrome.tabs.get(tabId);
+  const tab = await api.tabs.get(tabId);
   const shot = await captureTab(tab.windowId);
   if (shot) {
     const result = await decodeFromCapture(shot, msg);
@@ -180,7 +196,7 @@ async function decodeAreaFlow(msg, tabId) {
  * at natural resolution.
  */
 function locateImage(tabId, frameId, srcUrl) {
-  return chrome.scripting
+  return api.scripting
     .executeScript({
       target: { tabId, frameIds: [frameId] },
       func: (src) => {
@@ -229,13 +245,14 @@ function locateImage(tabId, frameId, srcUrl) {
 
 async function showResult(tabId, result) {
   try {
-    await chrome.scripting.executeScript({
+    await api.scripting.executeScript({
       target: { tabId },
       files: ['content/overlay.js']
     });
-    await chrome.tabs.sendMessage(tabId, { type: 'qrgenie:show-result', result });
+    await api.tabs.sendMessage(tabId, { type: 'qrgenie:show-result', result });
   } catch (_) {
-    // Restricted page (chrome://, Web Store, PDF viewer): use our own page.
+    // Restricted page (chrome:// and about: pages, extension stores, the
+    // PDF viewer): use our own page.
     // The payload stays in worker memory; the viewer asks for it on load,
     // quoting the nonce it was opened with.
     const nonce = crypto.randomUUID();
@@ -246,8 +263,8 @@ async function showResult(tabId, result) {
     while (pendingViewerResults.size > MAX_PENDING_RESULTS) {
       pendingViewerResults.delete(pendingViewerResults.keys().next().value);
     }
-    await chrome.tabs.create({
-      url: chrome.runtime.getURL('viewer/viewer.html') + '#' + nonce
+    await api.tabs.create({
+      url: api.runtime.getURL('viewer/viewer.html') + '#' + nonce
     });
   }
 }
@@ -271,7 +288,7 @@ function failure(source, reason) {
 
 async function captureTab(windowId) {
   try {
-    return await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+    return await api.tabs.captureVisibleTab(windowId, { format: 'png' });
   } catch (_) {
     return null;
   }
@@ -313,7 +330,11 @@ async function decodeFromCapture(captureDataUrl, rect) {
 /*
  * Runs jsQR over the bitmap, retrying at a different scale when the first
  * pass fails: small crops get upscaled (tiny modules), huge captures get
- * downscaled (jsQR's binarizer prefers moderate sizes).
+ * downscaled (jsQR's binarizer prefers moderate sizes). When plain decoding
+ * fails at every scale, the preprocessing ladder in common/preprocess.js
+ * gets one run on the size-normalized image — it recovers stylized codes
+ * (dot/gapped modules, rounded modules, mild perspective) that QRGenie's own
+ * product generates and phone cameras read. Clean codes never reach it.
  */
 function decodeBitmap(bitmap) {
   const attempts = [1];
@@ -321,6 +342,9 @@ function decodeBitmap(bitmap) {
   if (size < 300) attempts.push(3);
   else if (size > 1400) attempts.push(900 / size);
 
+  // Only the most recent attempt's pixels are kept for the ladder; holding
+  // every scale would pin tens of MiB for a 4K capture.
+  let last = null;
   for (const scale of attempts) {
     const w = Math.max(1, Math.round(bitmap.width * scale));
     const h = Math.max(1, Math.round(bitmap.height * scale));
@@ -328,9 +352,12 @@ function decodeBitmap(bitmap) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingEnabled = scale < 1;
     ctx.drawImage(bitmap, 0, 0, w, h);
-    const imageData = ctx.getImageData(0, 0, w, h);
-    const code = jsQR(imageData.data, w, h, { inversionAttempts: 'attemptBoth' });
+    last = ctx.getImageData(0, 0, w, h);
+    const code = jsQR(last.data, w, h, { inversionAttempts: 'attemptBoth' });
     if (code && code.data) return code.data;
   }
-  return null;
+
+  // `last` is the normalized image whenever a second scale was tried, and
+  // plain jsQR just failed on those exact pixels — skip the ladder's rung 0.
+  return QRGeniePreprocess.decodeLadder(last, jsQR, { skipPlain: true });
 }

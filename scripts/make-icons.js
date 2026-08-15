@@ -2,9 +2,10 @@
  * Regenerates icons/icon{16,32,48,128}.png. No dependencies:
  *   node scripts/make-icons.js
  *
- * Design: rounded square with a teal-to-purple gradient and a white QR
- * motif (three finder patterns plus an alignment pattern). Drawn 4x
- * supersampled and box-downsampled for clean edges at small sizes.
+ * Design: rounded square with a gradient over QRGenie's brand teals (main
+ * #19b0b3 into darker #003C3D) and a white QR motif (three finder patterns
+ * plus an alignment pattern). Drawn 4x supersampled and box-downsampled for
+ * clean edges at small sizes.
  */
 'use strict';
 const fs = require('fs');
@@ -59,8 +60,8 @@ function encodePNG(rgba, width, height) {
 
 // --- icon drawing ----------------------------------------------------------
 
-const TEAL = [15, 181, 186];
-const PURPLE = [124, 92, 255];
+const TEAL = [25, 176, 179]; // brand main #19b0b3
+const TEAL_DARK = [0, 60, 61]; // brand darker #003C3D
 
 function drawIcon(size) {
   const ss = 4;
@@ -119,9 +120,9 @@ function drawIcon(size) {
         r = g = b = 255;
       } else {
         const t = (x + y) / (2 * S);
-        r = TEAL[0] + (PURPLE[0] - TEAL[0]) * t;
-        g = TEAL[1] + (PURPLE[1] - TEAL[1]) * t;
-        b = TEAL[2] + (PURPLE[2] - TEAL[2]) * t;
+        r = TEAL[0] + (TEAL_DARK[0] - TEAL[0]) * t;
+        g = TEAL[1] + (TEAL_DARK[1] - TEAL[1]) * t;
+        b = TEAL[2] + (TEAL_DARK[2] - TEAL[2]) * t;
       }
       px[o] = r;
       px[o + 1] = g;
