@@ -50,7 +50,7 @@
       );
     } else if (result.reason === 'page-busy') {
       body.appendChild(
-        el('div', null, 'The page did not respond in time, so we stopped before taking a screenshot.')
+        el('div', null, 'The page took too long, so no screenshot was decoded.')
       );
       body.appendChild(el('div', 'hint', 'Nothing was scanned. Try again in a moment.'));
     } else {

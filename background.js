@@ -57,12 +57,43 @@ const MAX_PENDING_RESULTS = 8;
  * Ids must keep rising across service worker restarts, because the overlay in
  * the page outlives the worker: seeding from the clock does that, and the
  * max() keeps ids unique when several scans start inside the same millisecond.
+ *
+ * The clock is the weak part: set it back and a fresh worker seeds below the
+ * ids already in the page, which would drop everything we send from then on.
+ * There is no storage permission to lean on, so the page reports the highest
+ * id it has seen in every answer and adoptOp() catches us up (see below). A
+ * scan carries its id in a small object rather than a number, so a scan
+ * already under way can be moved onto a corrected id.
  */
 let lastOpId = Date.now();
 
 function nextOp() {
   lastOpId = Math.max(lastOpId + 1, Date.now());
   return lastOpId;
+}
+
+function newScan() {
+  return { op: nextOp() };
+}
+
+/*
+ * Reads the overlay's answer and, if the page has seen an id this worker could
+ * never have issued, catches up and moves the scan onto a fresh id above it.
+ *
+ * The `> lastOpId` test is what makes this safe. Ids this worker handed out are
+ * all <= lastOpId, so a genuinely newer scan of our own can never trigger it,
+ * and this cannot be used to hand an older scan the corner back. Anything above
+ * lastOpId came from a worker instance that read a later clock than ours.
+ *
+ * Returns true when the message we just sent was dropped as stale and is worth
+ * sending again under the corrected id.
+ */
+function adoptOp(scan, ack) {
+  const seen = ack && typeof ack.op === 'number' && Number.isFinite(ack.op) ? ack.op : null;
+  if (seen === null || seen <= lastOpId) return false;
+  lastOpId = seen;
+  scan.op = nextOp();
+  return true;
 }
 
 api.runtime.onInstalled.addListener(() => {
@@ -86,15 +117,15 @@ api.runtime.onInstalled.addListener(() => {
 api.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab || tab.id == null) return;
   if (info.menuItemId === MENU_IMAGE) {
-    const op = nextOp();
-    decodeImageFlow(info, tab, op).catch((err) => reportFailure(tab.id, 'image', err, op));
+    const scan = newScan();
+    decodeImageFlow(info, tab, scan).catch((err) => reportFailure(tab.id, 'image', err, scan));
   } else if (info.menuItemId === MENU_AREA) {
     // If the selection overlay cannot be injected, the page blocked us
     // (chrome:// and about: pages, extension stores, PDF viewer) — not a
     // failed decode.
     startAreaSelect(tab.id).catch((err) => {
       console.warn('QRGenie area select blocked:', err);
-      showResult(tab.id, failure('area', 'blocked'), nextOp());
+      showResult(tab.id, failure('area', 'blocked'), newScan());
     });
   }
 });
@@ -111,9 +142,9 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'qrgenie:area-selected' && sender.tab && sender.tab.id != null) {
-    const op = nextOp();
-    decodeAreaFlow(msg, sender.tab.id, op).catch((err) =>
-      reportFailure(sender.tab.id, 'area', err, op)
+    const scan = newScan();
+    decodeAreaFlow(msg, sender.tab.id, scan).catch((err) =>
+      reportFailure(sender.tab.id, 'area', err, scan)
     );
     return false;
   }
@@ -149,17 +180,17 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ---------------------------------------------------------------------------
 // Flows
 
-async function decodeImageFlow(info, tab, op) {
+async function decodeImageFlow(info, tab, scan) {
   const frameId = info.frameId || 0;
   let located = null;
 
   // Every attempt below can run the preprocessing ladder, which takes a second
   // or two on a stylized code, so the page says so from the start.
-  await showBusy(tab.id, 'image', op);
+  await showBusy(tab.id, 'image', scan);
 
   if (info.srcUrl && info.srcUrl.startsWith('data:')) {
     const result = await decodeFromDataUrl(info.srcUrl);
-    if (result) return showResult(tab.id, success(result, 'image'), op);
+    if (result) return showResult(tab.id, success(result, 'image'), scan);
   }
 
   try {
@@ -171,33 +202,34 @@ async function decodeImageFlow(info, tab, op) {
   // Best quality: the image itself, exported by the page at natural size.
   if (located && located.dataUrl) {
     const result = await decodeFromDataUrl(located.dataUrl);
-    if (result) return showResult(tab.id, success(result, 'image'), op);
+    if (result) return showResult(tab.id, success(result, 'image'), scan);
   }
 
   // Screenshot fallback. Rects from cross-origin iframes are relative to the
   // iframe viewport, so only crop for the top frame; otherwise scan the whole
   // visible tab. Full-tab results are flagged so the card can say the code
   // was found on the visible tab, not read from the image itself.
-  const capture = await captureTabForDecode(tab.id, tab.windowId, op);
+  const capture = await captureTabForDecode(tab.id, tab.windowId, scan);
   if (capture.dataUrl) {
     const rect = frameId === 0 && located ? located : null;
     if (rect) {
       const result = await decodeFromCapture(capture.dataUrl, rect);
-      if (result) return showResult(tab.id, success(result, 'image'), op);
+      if (result) return showResult(tab.id, success(result, 'image'), scan);
     }
     const full = await decodeFromCapture(capture.dataUrl, null);
-    if (full) return showResult(tab.id, success(full, 'image', true), op);
+    if (full) return showResult(tab.id, success(full, 'image', true), scan);
   }
 
   if (capture.held) {
-    // We never took the screenshot, so this is not "no code in the image".
-    return showResult(tab.id, failure('image', 'page-busy'), op);
+    // No screenshot we were willing to decode, so this is not "no code in
+    // the image".
+    return showResult(tab.id, failure('image', 'page-busy'), scan);
   }
   if (!capture.dataUrl && !located) {
     // Neither injecting nor capturing worked: the page blocked us.
-    return showResult(tab.id, failure('image', 'blocked'), op);
+    return showResult(tab.id, failure('image', 'blocked'), scan);
   }
-  return showResult(tab.id, failure('image'), op);
+  return showResult(tab.id, failure('image'), scan);
 }
 
 async function startAreaSelect(tabId) {
@@ -207,7 +239,7 @@ async function startAreaSelect(tabId) {
   });
 }
 
-async function decodeAreaFlow(msg, tabId, op) {
+async function decodeAreaFlow(msg, tabId, scan) {
   // The user selected a region: decode that region only. No full-capture
   // fallback here — it could surface an unrelated QR code from elsewhere on
   // the page, outside the box the user drew.
@@ -215,16 +247,16 @@ async function decodeAreaFlow(msg, tabId, op) {
   // Capture first, then raise the indicator: the capture is what the user just
   // framed, and taking it before anything is drawn keeps this scan's own
   // indicator out of it for free.
-  const capture = await captureTabForDecode(tabId, tab.windowId, op);
+  const capture = await captureTabForDecode(tabId, tab.windowId, scan);
   // No capture means nothing to decode: say that straight away rather than
   // spinning an indicator over work that will not happen.
-  if (capture.held) return showResult(tabId, failure('area', 'page-busy'), op);
-  await showBusy(tabId, 'area', op);
+  if (capture.held) return showResult(tabId, failure('area', 'page-busy'), scan);
+  await showBusy(tabId, 'area', scan);
   if (capture.dataUrl) {
     const result = await decodeFromCapture(capture.dataUrl, msg);
-    if (result) return showResult(tabId, success(result, 'area'), op);
+    if (result) return showResult(tabId, success(result, 'area'), scan);
   }
-  return showResult(tabId, failure('area'), op);
+  return showResult(tabId, failure('area'), scan);
 }
 
 // ---------------------------------------------------------------------------
@@ -290,13 +322,23 @@ function locateImage(tabId, frameId, srcUrl) {
  * which clears the indicator, and the overlay drops it on its own if this
  * script dies mid-decode.
  */
-async function showBusy(tabId, source, op) {
+async function showBusy(tabId, source, scan) {
   try {
     await api.scripting.executeScript({
       target: { tabId },
       files: ['content/overlay.js']
     });
-    await api.tabs.sendMessage(tabId, { type: 'qrgenie:show-busy', source, op });
+    const ack = await api.tabs.sendMessage(tabId, {
+      type: 'qrgenie:show-busy',
+      source,
+      op: scan.op
+    });
+    // The first thing either flow says to the page, so it is also where an id
+    // that fell behind the page gets found and corrected. One retry only: the
+    // corrected id is above everything the page has seen.
+    if (adoptOp(scan, ack)) {
+      await api.tabs.sendMessage(tabId, { type: 'qrgenie:show-busy', source, op: scan.op });
+    }
   } catch (_) {
     // Restricted page, or the tab went away. Decoding carries on regardless.
   }
@@ -311,6 +353,21 @@ const FORCE_HIDE_MS = 1000;
 // executeScript returns as soon as the hide has run, which is before the page
 // has painted without us. Two frames at 30fps, the same beat the overlay uses.
 const FORCE_HIDE_REPAINT_MS = 70;
+
+/*
+ * CAPTURE_MAX_MS in content/overlay.js: how long the overlay stays hidden for
+ * one capture before it gives up on us and uncovers itself. Our screenshot is
+ * only trustworthy inside that window. captureVisibleTab can be queued or
+ * stalled well past it (a busy window, a throttled background tab), and the
+ * screenshot that eventually lands would then show our own UI, so it is thrown
+ * away instead of decoded.
+ *
+ * The margin covers the two clocks being read at different moments: the page
+ * arms its lease after our message reaches it, always later than the stamp we
+ * take here, so erring early is the safe direction.
+ */
+const CAPTURE_LEASE_MS = 5000;
+const CAPTURE_LEASE_MARGIN_MS = 250;
 
 const DEADLINE = Symbol('deadline');
 
@@ -331,10 +388,24 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * not have known whether our own UI was on screen. A held capture is not a
  * failed decode and must not be reported as one.
  */
-async function captureTabForDecode(tabId, windowId, op) {
-  if (!(await hideForCapture(tabId, op))) return { dataUrl: null, held: true };
+async function captureTabForDecode(tabId, windowId, scan) {
+  // Stamped before the hide goes out, so the window we allow ourselves is
+  // never longer than the one the page granted.
+  const hiddenAt = Date.now();
+  // The lease in the page is keyed on the id we hide under, so the restore has
+  // to quote that same id even if the scan moves on to a corrected one.
+  const op = scan.op;
+  const cleared = await hideForCapture(tabId, op);
   try {
-    return { dataUrl: await captureTab(windowId), held: false };
+    // Even a hide we could not confirm may have got half way, so the page is
+    // told to put its UI back either way rather than left to time out.
+    if (!cleared) return { dataUrl: null, held: true };
+    const dataUrl = await captureTab(windowId);
+    if (dataUrl && Date.now() - hiddenAt > CAPTURE_LEASE_MS - CAPTURE_LEASE_MARGIN_MS) {
+      // The page could already have uncovered itself while this was pending.
+      return { dataUrl: null, held: true };
+    }
+    return { dataUrl, held: false };
   } finally {
     await sendToPage(tabId, { type: 'qrgenie:restore-after-capture', op });
   }
@@ -346,11 +417,19 @@ async function captureTabForDecode(tabId, windowId, op) {
  * Three outcomes, and the difference between them is the whole point:
  *   - the message is rejected: nothing of ours is injected in the tab, so
  *     nothing of ours can be in the capture;
- *   - the overlay answers: it has hidden itself and the page has painted;
- *   - no answer in time: we do not know, so we hide it ourselves from a script
- *     we inject, and only a confirmed hide clears the capture. Everything else
+ *   - the overlay answers {hidden: true}: it has hidden itself and the page
+ *     has painted;
+ *   - anything else: we do not know, so we hide it ourselves from a script we
+ *     inject, and only a confirmed hide clears the capture. Everything else
  *     returns false and the caller drops the capture rather than risk taking a
  *     photograph of our own indicator and decoding it.
+ *
+ * "Anything else" is deliberately everything that is not that one literal
+ * answer. A listener that returns without answering fulfils this promise with
+ * no value at all: an overlay too old to know about hiding, a handler that
+ * dropped the message, a shape we did not expect. None of those is a promise
+ * that our UI is off screen, and reading them as one is how our own indicator
+ * ends up in the pixels we decode.
  */
 async function hideForCapture(tabId, op) {
   try {
@@ -358,7 +437,7 @@ async function hideForCapture(tabId, op) {
       api.tabs.sendMessage(tabId, { type: 'qrgenie:hide-for-capture', op }),
       HIDE_ACK_MS
     );
-    if (acked !== DEADLINE) return true;
+    if (acked && acked !== DEADLINE && acked.hidden === true) return true;
   } catch (_) {
     // No receiving end: no overlay of ours in this tab.
     return true;
@@ -412,13 +491,22 @@ function sendToPage(tabId, msg) {
   ]);
 }
 
-async function showResult(tabId, result, op) {
+async function showResult(tabId, result, scan) {
   try {
     await api.scripting.executeScript({
       target: { tabId },
       files: ['content/overlay.js']
     });
-    await api.tabs.sendMessage(tabId, { type: 'qrgenie:show-result', result, op });
+    const ack = await api.tabs.sendMessage(tabId, {
+      type: 'qrgenie:show-result',
+      result,
+      op: scan.op
+    });
+    // A flow can end without ever showing an indicator (a held capture), so
+    // this is the other place an id that fell behind the page surfaces.
+    if (adoptOp(scan, ack)) {
+      await api.tabs.sendMessage(tabId, { type: 'qrgenie:show-result', result, op: scan.op });
+    }
   } catch (_) {
     // Restricted page (chrome:// and about: pages, extension stores, the
     // PDF viewer): use our own page.
@@ -438,9 +526,9 @@ async function showResult(tabId, result, op) {
   }
 }
 
-function reportFailure(tabId, source, err, op) {
+function reportFailure(tabId, source, err, scan) {
   console.warn('QRGenie decode failed:', err);
-  return showResult(tabId, failure(source), op);
+  return showResult(tabId, failure(source), scan);
 }
 
 // ---------------------------------------------------------------------------

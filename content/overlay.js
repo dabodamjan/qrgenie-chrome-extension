@@ -12,6 +12,9 @@
  * and without ids the older one gets to undo the newer one's work: restoring
  * the indicator into the newer scan's screenshot, or replacing its indicator
  * with a stale result. So the newest id wins and older ones are dropped.
+ *
+ * The answers carry the newest id this page has seen, which is how a worker
+ * whose ids fell behind the page finds out (see the listener at the bottom).
  */
 (() => {
   if (window.__qrgenieOverlay) return;
@@ -25,15 +28,20 @@
     busyHost: null,
     busyFade: 0,
     busyMax: 0,
-    // Highest scan id seen, and the capture currently in flight (see hideNow).
+    // Highest scan id seen; one lease per capture in flight (see hideNow); and
+    // everything those leases took off screen.
     op: 0,
-    capture: null
+    leases: new Map(),
+    hidden: new Set()
   };
 
-  // Messages with no id at all come from a worker that predates them; treat
-  // them as current rather than dropping them on the floor.
+  // Messages with no id at all come from a worker that predates them. They
+  // count as current only until an id-carrying scan has spoken: after that,
+  // an id-less message can only be older than what we have already applied,
+  // and treating it as current would let it undo a live scan's work forever.
   function opOf(msg) {
-    return typeof msg.op === 'number' ? msg.op : Infinity;
+    if (typeof msg.op === 'number' && Number.isFinite(msg.op)) return msg.op;
+    return state.op > 0 ? null : Infinity;
   }
 
   // True when a newer scan has already announced itself.
@@ -235,7 +243,9 @@
 
   // A capture leaves everything of ours hidden until the worker says the
   // screenshot is taken. If that word never comes (the worker was terminated
-  // mid-decode) the page must not keep an invisible indicator forever.
+  // mid-decode) the page must not keep an invisible indicator forever, so each
+  // capture's lease expires on its own. The worker knows this number too and
+  // throws away a screenshot that could have landed after the lease lapsed.
   const CAPTURE_MAX_MS = 5000;
 
   const GLYPH =
@@ -365,33 +375,38 @@
    * can just as well be. So they step aside for the capture, and we only
    * answer once the page has painted without them.
    *
-   * What gets restored afterwards is exactly what was hidden, tracked per
-   * capture: restoring "whatever is on screen now" would put an older scan's
-   * indicator back into a newer scan's screenshot.
+   * What gets restored afterwards is exactly what was hidden: restoring
+   * "whatever is on screen now" would put an older scan's indicator back into
+   * a newer scan's screenshot.
+   *
+   * Each capture takes its own lease, keyed by the scan that asked for it, and
+   * the page stays clear until every outstanding lease is released. Ordering
+   * between two scans is not something the page can rely on: scan 2 can hide,
+   * scan 1 can hide, and scan 2 can be photographed and restore while scan 1's
+   * screenshot is still to come. Counting leases holds through all of them;
+   * remembering only the newest capture does not.
    */
   function hideNow(op) {
-    const hosts = [state.host, state.busyHost].filter(Boolean);
-    if (state.capture) {
-      clearTimeout(state.capture.timer);
-      for (const host of hosts) state.capture.hosts.add(host);
-      // Overlapping captures share one record, held open by the newest of
-      // them: an older restore arriving first must not uncover the page for
-      // the capture that is still to come.
-      state.capture.op = Math.max(state.capture.op, op);
-    } else {
-      state.capture = { op, hosts: new Set(hosts), timer: 0 };
+    const lease = state.leases.get(op);
+    if (lease) clearTimeout(lease.timer);
+    state.leases.set(op, { timer: setTimeout(() => release(op), CAPTURE_MAX_MS) });
+    for (const host of [state.host, state.busyHost]) {
+      if (host) hide(host);
     }
-    state.capture.timer = setTimeout(restoreCaptured, CAPTURE_MAX_MS);
-    for (const host of state.capture.hosts) host.style.display = 'none';
     return true;
+  }
+
+  function hide(host) {
+    host.style.display = 'none';
+    state.hidden.add(host);
   }
 
   function hideForCapture(op, done) {
     hideNow(op);
     // Nothing of ours was on screen, so there is no repaint to wait for. The
-    // capture stays open regardless: anything drawn before the worker restores
+    // lease is held regardless: anything drawn before the worker restores
     // still has to keep out of the screenshot.
-    if (!state.capture.hosts.size) return done();
+    if (!state.hidden.size) return done();
 
     let answered = false;
     const answer = () => {
@@ -405,29 +420,34 @@
     setTimeout(answer, REPAINT_FALLBACK_MS);
   }
 
-  function restoreCaptured() {
-    if (!state.capture) return;
-    clearTimeout(state.capture.timer);
-    for (const host of state.capture.hosts) host.style.display = '';
-    state.capture = null;
+  /*
+   * Gives one capture's lease back, whether because the worker said so or
+   * because the lease ran out. The page is uncovered only by the last one:
+   * releasing early is what would drop an older scan's indicator into a newer
+   * scan's screenshot.
+   */
+  function release(op) {
+    const lease = state.leases.get(op);
+    if (!lease) return;
+    clearTimeout(lease.timer);
+    state.leases.delete(op);
+    if (state.leases.size) return;
+    for (const host of state.hidden) host.style.display = '';
+    state.hidden.clear();
   }
 
   function restoreAfterCapture(op) {
-    // Only the newest capture's own restore ends the hiding.
-    if (!state.capture || op < state.capture.op) return;
-    restoreCaptured();
+    release(op);
   }
 
-  // Anything drawn while a capture is in flight joins the capture: a newer
+  // Anything drawn while a capture is in flight joins the hiding: a newer
   // scan raising its indicator must not walk into an older scan's screenshot.
   function trackDuringCapture(host) {
-    if (!state.capture) return;
-    host.style.display = 'none';
-    state.capture.hosts.add(host);
+    if (state.leases.size) hide(host);
   }
 
   function untrack(host) {
-    if (state.capture) state.capture.hosts.delete(host);
+    state.hidden.delete(host);
   }
 
   function show(result) {
@@ -468,10 +488,11 @@
         <div class="error">Your browser does not let extensions scan this page.</div>
         <div class="hint">Browser pages, extension stores and the built-in PDF viewer are off limits. Try the scan on a regular website.</div>`;
     } else if (result.reason === 'page-busy') {
-      // The screenshot was dropped rather than risk photographing this card.
-      // Saying "no QR code found" here would be a decode we never ran.
+      // Either the screenshot was never taken or it was thrown away, rather
+      // than risk decoding a photograph of this card. Saying "no QR code
+      // found" here would be a decode we never ran.
       bodyHtml = `
-        <div class="error">The page did not respond in time, so we stopped before taking a screenshot.</div>
+        <div class="error">The page took too long, so no screenshot was decoded.</div>
         <div class="hint">Nothing was scanned. Try again in a moment.</div>`;
     } else {
       const what = result.source === 'area' ? 'in that area' : 'in this image';
@@ -510,19 +531,22 @@
   api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.type !== 'string') return false;
     const op = opOf(msg);
+    // An id-less message from a worker that has already been outlived (see
+    // opOf). Answering it would be answering for a scan that no longer exists.
+    if (op === null) return false;
 
     if (msg.type === 'qrgenie:hide-for-capture') {
-      // The only message we answer, and the only one we honour even from a
-      // superseded scan: hiding is always safe, and the worker treats a
-      // missing answer as a reason not to capture at all.
+      // The one message we honour even from a superseded scan: hiding is
+      // always safe, and the worker treats anything but a plain yes here as a
+      // reason not to capture at all.
       claim(op);
-      hideForCapture(op, () => sendResponse({ hidden: true }));
+      hideForCapture(op, () => sendResponse({ hidden: true, op: state.op }));
       return true;
     }
 
     if (msg.type === 'qrgenie:restore-after-capture') {
-      // Gated on the capture, not on the newest scan: a scan that raised its
-      // indicator without capturing anything must not strand it off screen.
+      // Gated on the capture's own lease, not on the newest scan: a scan that
+      // raised its indicator without capturing must not strand it off screen.
       restoreAfterCapture(op);
       return false;
     }
@@ -530,11 +554,22 @@
     // What is left draws on screen, and a scan that a newer one has replaced
     // no longer owns that corner: its late result would clear a live
     // indicator, its late indicator would clear a fresh result.
-    if (superseded(op)) return false;
+    //
+    // Either way the answer names the newest id we have seen. The worker seeds
+    // its ids from the clock, so a clock set backwards plus a worker restart
+    // can put it behind this page and every message it sends would be dropped
+    // here in silence; the id in this answer is how it finds that out.
+    if (superseded(op)) {
+      sendResponse({ applied: false, op: state.op });
+      return false;
+    }
     claim(op);
 
     if (msg.type === 'qrgenie:show-result') show(msg.result);
     else if (msg.type === 'qrgenie:show-busy') showBusy(msg.source);
+    else return false;
+
+    sendResponse({ applied: true, op: state.op });
     return false;
   });
 
