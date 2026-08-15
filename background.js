@@ -72,18 +72,42 @@ function nextOp() {
   return lastOpId;
 }
 
+/*
+ * The scans that have not finished yet, in the order they started.
+ *
+ * A correction reissues ids (see adoptOp), and it has to reissue them to every
+ * live scan at once: they were all handed out below the page's ids, so they
+ * are all stale. Correcting one alone is what would let an older scan overtake
+ * a newer one, since the newer one would sit under its old id for good. A Set
+ * keeps insertion order, which is creation order, so reissuing by iteration
+ * hands the ids back out in the same ranking they had.
+ *
+ * Every flow ends in showResult, and that is where a scan leaves the set.
+ */
+const liveScans = new Set();
+
 function newScan() {
-  return { op: nextOp() };
+  const scan = { op: nextOp() };
+  liveScans.add(scan);
+  return scan;
 }
 
 /*
  * Reads the overlay's answer and, if the page has seen an id this worker could
- * never have issued, catches up and moves the scan onto a fresh id above it.
+ * never have issued, catches up and moves every scan still running onto fresh
+ * ids above it.
  *
  * The `> lastOpId` test is what makes this safe. Ids this worker handed out are
  * all <= lastOpId, so a genuinely newer scan of our own can never trigger it,
  * and this cannot be used to hand an older scan the corner back. Anything above
  * lastOpId came from a worker instance that read a later clock than ours.
+ *
+ * All the live scans move, not just this one, and they move in the order they
+ * started: correcting only the scan whose answer arrived first would leave the
+ * others stranded under ids the page has already outgrown, and an older scan
+ * would then outrank a newer one for the rest of its life. Only this scan's
+ * message needs sending again here — every other scan reads its own id afresh
+ * on its next send, so it picks up the corrected one there.
  *
  * Returns true when the message we just sent was dropped as stale and is worth
  * sending again under the corrected id.
@@ -92,7 +116,10 @@ function adoptOp(scan, ack) {
   const seen = ack && typeof ack.op === 'number' && Number.isFinite(ack.op) ? ack.op : null;
   if (seen === null || seen <= lastOpId) return false;
   lastOpId = seen;
-  scan.op = nextOp();
+  for (const live of liveScans) live.op = nextOp();
+  // A scan whose flow has already settled is not in the set, and the caller is
+  // still owed an id above everything the page has seen.
+  if (!liveScans.has(scan)) scan.op = nextOp();
   return true;
 }
 
@@ -365,6 +392,13 @@ const FORCE_HIDE_REPAINT_MS = 70;
  * The margin covers the two clocks being read at different moments: the page
  * arms its lease after our message reaches it, always later than the stamp we
  * take here, so erring early is the safe direction.
+ *
+ * Measured on performance.now(), never the wall clock. A wall clock can be
+ * stepped backwards (NTP, the user) while a capture is pending, which shrinks
+ * the elapsed time we measure and would wave through a screenshot taken long
+ * after the page uncovered itself — with our own indicator in it. The one
+ * clock this check may trust is the one that only moves forward, and both the
+ * Chrome service worker and the Firefox event page have it.
  */
 const CAPTURE_LEASE_MS = 5000;
 const CAPTURE_LEASE_MARGIN_MS = 250;
@@ -391,7 +425,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function captureTabForDecode(tabId, windowId, scan) {
   // Stamped before the hide goes out, so the window we allow ourselves is
   // never longer than the one the page granted.
-  const hiddenAt = Date.now();
+  const hiddenAt = performance.now();
   // The lease in the page is keyed on the id we hide under, so the restore has
   // to quote that same id even if the scan moves on to a corrected one.
   const op = scan.op;
@@ -401,7 +435,7 @@ async function captureTabForDecode(tabId, windowId, scan) {
     // told to put its UI back either way rather than left to time out.
     if (!cleared) return { dataUrl: null, held: true };
     const dataUrl = await captureTab(windowId);
-    if (dataUrl && Date.now() - hiddenAt > CAPTURE_LEASE_MS - CAPTURE_LEASE_MARGIN_MS) {
+    if (dataUrl && performance.now() - hiddenAt > CAPTURE_LEASE_MS - CAPTURE_LEASE_MARGIN_MS) {
       // The page could already have uncovered itself while this was pending.
       return { dataUrl: null, held: true };
     }
@@ -523,6 +557,11 @@ async function showResult(tabId, result, scan) {
     await api.tabs.create({
       url: api.runtime.getURL('viewer/viewer.html') + '#' + nonce
     });
+  } finally {
+    // Both flows end here, however they end. A scan that is over must stop
+    // taking part in corrections: it has nothing left to send, and holding on
+    // to it would grow the set for as long as the worker lives.
+    liveScans.delete(scan);
   }
 }
 

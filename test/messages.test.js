@@ -349,6 +349,25 @@ test('a screenshot that lands after the hold could have lapsed is thrown away', 
   assert.strictEqual(restores[0].op, 5);
 });
 
+test('a wall clock stepping backwards mid-capture cannot revive a stale screenshot', async () => {
+  // The hold is measured on monotonic time for exactly this: the lease really
+  // has lapsed, and an NTP correction lands while captureVisibleTab is still
+  // queued. On the wall clock the capture now looks like it came back in
+  // negative time, which would wave through a screenshot of our own indicator.
+  const bg = loadBackground({
+    sendMessage: (msg) =>
+      msg.type === 'qrgenie:hide-for-capture' ? { hidden: true, op: 5 } : undefined,
+    capture: () => {
+      bg.advance(6000);
+      bg.stepWallClock(-30000);
+      return 'data:image/png;base64,AAAA';
+    }
+  });
+  const capture = await bg.get('captureTabForDecode')(1, 1, { op: 5 });
+  assert.strictEqual(capture.held, true);
+  assert.strictEqual(capture.dataUrl, null, 'the screenshot itself is dropped');
+});
+
 test('the restore quotes the id the capture was hidden under', async () => {
   // The hold in the page is keyed on that id. Quoting a different one leaves
   // the page covered until the hold runs out.
@@ -381,6 +400,44 @@ test('the worker catches up when the page has ids it could not have issued', asy
   assert.strictEqual(busy[0].op, first);
   assert.ok(scan.op > ahead, 'the new id is above everything the page has seen');
   assert.strictEqual(busy[1].op, scan.op);
+});
+
+test('catching up keeps overlapping scans in the order they started', async () => {
+  // Two scans are in flight and the page is ahead of both. The older one's
+  // answer is what uncovers that, and correcting it alone would push it above
+  // the newer one — the newer scan would still be sitting under an id the page
+  // has outgrown, so every message it sent from then on would be dropped there
+  // while the older scan owned the corner.
+  const ahead = 9e12;
+  const bg = loadBackground({ sendMessage: () => ({ applied: false, op: ahead }) });
+  const older = bg.get('newScan')();
+  const newer = bg.get('newScan')();
+  assert.ok(newer.op > older.op, 'the second scan starts above the first');
+
+  await bg.get('showBusy')(1, 'image', older);
+
+  assert.ok(older.op > ahead, 'the older scan caught up with the page');
+  assert.ok(newer.op > older.op, 'and the newer scan still outranks it');
+});
+
+test('a scan that has finished is left out of the catch-up', async () => {
+  // Its flow is over: it has nothing left to send, and dragging it along would
+  // put a settled scan above the ones still running.
+  let pageOp = 9e12;
+  const bg = loadBackground({ sendMessage: () => ({ applied: false, op: pageOp }) });
+  const done = bg.get('newScan')();
+  const running = bg.get('newScan')();
+
+  await bg.get('showResult')(1, { ok: false, source: 'image', reason: null }, done);
+  const settledAt = done.op;
+
+  // The page moves further ahead, so the next answer triggers a second
+  // catch-up while only one of the two scans is still going.
+  pageOp = 9e13;
+  await bg.get('showBusy')(1, 'image', running);
+
+  assert.strictEqual(done.op, settledAt, 'the finished scan was not reissued');
+  assert.ok(running.op > pageOp, 'the live scan caught up with the page');
 });
 
 test('a genuinely newer scan of our own never hands the corner back', async () => {

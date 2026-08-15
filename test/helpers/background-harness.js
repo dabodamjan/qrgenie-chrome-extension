@@ -7,11 +7,13 @@
  * lands in the context and the tests can call hideForCapture,
  * captureTabForDecode and showBusy directly.
  *
- * The clock is ours: background.js reads Date.now() to stamp scan ids and to
- * decide whether a screenshot arrived while our UI was still hidden, and a
- * test needs to move time without spending it.
+ * The clocks are ours, and there are two of them, because background.js reads
+ * two: Date.now() seeds scan ids, and performance.now() measures how long a
+ * capture has been pending. A test needs to move time without spending it, and
+ * needs to move the wall clock on its own — a wall clock that steps backwards
+ * mid-capture is the thing the monotonic one is there to survive.
  *
- * loadBackground(stubs) -> { get, sent, executed, advance }
+ * loadBackground(stubs) -> { get, sent, executed, advance, stepWallClock }
  */
 'use strict';
 const fs = require('node:fs');
@@ -46,6 +48,7 @@ function loadBackground(stubs = {}) {
   );
 
   let now = START_MS;
+  let mono = 0;
   const sent = [];
   const executed = [];
   let nonces = 0;
@@ -56,6 +59,7 @@ function loadBackground(stubs = {}) {
     console: { warn() {}, log() {}, error() {} },
     crypto: { randomUUID: () => `nonce-${++nonces}` },
     Date: { now: () => now },
+    performance: { now: () => mono },
     setTimeout: (fn, ms) => armTimer(fn, ms),
     clearTimeout: (t) => clearTimeout(t),
     chrome: {
@@ -106,8 +110,15 @@ function loadBackground(stubs = {}) {
       return vm.runInContext(name, context);
     },
 
-    // Moves the worker's clock without spending the time.
+    // Time passes: both clocks move, without the test spending the time.
     advance(ms) {
+      now += ms;
+      mono += ms;
+    },
+
+    // The wall clock alone jumps, forwards or backwards, the way an NTP
+    // correction moves it under a running worker. Monotonic time is untouched.
+    stepWallClock(ms) {
       now += ms;
     }
   };
