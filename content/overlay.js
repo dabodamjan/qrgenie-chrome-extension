@@ -6,6 +6,12 @@
  *   qrgenie:hide-for-capture       take what we drew off screen for a capture
  *   qrgenie:restore-after-capture  put it back
  *   qrgenie:show-result            the decode finished, card replaces indicator
+ *
+ * Every message carries the id of the scan that sent it. Two scans can be in
+ * flight in one tab (a right-click decode while an area scan is still working),
+ * and without ids the older one gets to undo the newer one's work: restoring
+ * the indicator into the newer scan's screenshot, or replacing its indicator
+ * with a stale result. So the newest id wins and older ones are dropped.
  */
 (() => {
   if (window.__qrgenieOverlay) return;
@@ -13,7 +19,31 @@
   // Firefox only guarantees promises on browser.*; Chrome and Edge on chrome.*.
   const api = globalThis.browser ?? globalThis.chrome;
 
-  const state = { host: null, root: null, busyHost: null, busyFade: 0, busyMax: 0 };
+  const state = {
+    host: null,
+    root: null,
+    busyHost: null,
+    busyFade: 0,
+    busyMax: 0,
+    // Highest scan id seen, and the capture currently in flight (see hideNow).
+    op: 0,
+    capture: null
+  };
+
+  // Messages with no id at all come from a worker that predates them; treat
+  // them as current rather than dropping them on the floor.
+  function opOf(msg) {
+    return typeof msg.op === 'number' ? msg.op : Infinity;
+  }
+
+  // True when a newer scan has already announced itself.
+  function superseded(op) {
+    return op < state.op;
+  }
+
+  function claim(op) {
+    if (op > state.op && op !== Infinity) state.op = op;
+  }
 
   const CSS = `
     :host { all: initial; }
@@ -198,6 +228,16 @@
   // capture: two frames plus a beat, the same wait area-select.js uses.
   const REPAINT_MS = 50;
 
+  // requestAnimationFrame does not fire in an occluded window, and the worker
+  // now treats a missing answer as a reason not to capture at all, so the
+  // answer also goes out on a plain timer.
+  const REPAINT_FALLBACK_MS = 300;
+
+  // A capture leaves everything of ours hidden until the worker says the
+  // screenshot is taken. If that word never comes (the worker was terminated
+  // mid-decode) the page must not keep an invisible indicator forever.
+  const CAPTURE_MAX_MS = 5000;
+
   const GLYPH =
     '<svg class="glyph" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
     '<path fill="#fff" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/></svg>';
@@ -210,6 +250,7 @@
 
   function remove() {
     if (state.host) {
+      untrack(state.host);
       state.host.remove();
       state.host = null;
       state.root = null;
@@ -297,6 +338,7 @@
     pill.append(spinner, label);
     root.appendChild(pill);
 
+    trackDuringCapture(host);
     (document.body || document.documentElement).appendChild(host);
     state.busyHost = host;
 
@@ -310,6 +352,7 @@
     clearTimeout(state.busyFade);
     clearTimeout(state.busyMax);
     if (state.busyHost) {
+      untrack(state.busyHost);
       state.busyHost.remove();
       state.busyHost = null;
     }
@@ -321,20 +364,70 @@
    * from an earlier scan, both sitting in the top right corner where a QR code
    * can just as well be. So they step aside for the capture, and we only
    * answer once the page has painted without them.
+   *
+   * What gets restored afterwards is exactly what was hidden, tracked per
+   * capture: restoring "whatever is on screen now" would put an older scan's
+   * indicator back into a newer scan's screenshot.
    */
-  function hideForCapture(done) {
+  function hideNow(op) {
     const hosts = [state.host, state.busyHost].filter(Boolean);
-    if (!hosts.length) return done();
-    for (const host of hosts) host.style.display = 'none';
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => setTimeout(done, REPAINT_MS))
-    );
+    if (state.capture) {
+      clearTimeout(state.capture.timer);
+      for (const host of hosts) state.capture.hosts.add(host);
+      // Overlapping captures share one record, held open by the newest of
+      // them: an older restore arriving first must not uncover the page for
+      // the capture that is still to come.
+      state.capture.op = Math.max(state.capture.op, op);
+    } else {
+      state.capture = { op, hosts: new Set(hosts), timer: 0 };
+    }
+    state.capture.timer = setTimeout(restoreCaptured, CAPTURE_MAX_MS);
+    for (const host of state.capture.hosts) host.style.display = 'none';
+    return true;
   }
 
-  function restoreAfterCapture() {
-    for (const host of [state.host, state.busyHost]) {
-      if (host) host.style.display = '';
-    }
+  function hideForCapture(op, done) {
+    hideNow(op);
+    // Nothing of ours was on screen, so there is no repaint to wait for. The
+    // capture stays open regardless: anything drawn before the worker restores
+    // still has to keep out of the screenshot.
+    if (!state.capture.hosts.size) return done();
+
+    let answered = false;
+    const answer = () => {
+      if (answered) return;
+      answered = true;
+      done();
+    };
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setTimeout(answer, REPAINT_MS))
+    );
+    setTimeout(answer, REPAINT_FALLBACK_MS);
+  }
+
+  function restoreCaptured() {
+    if (!state.capture) return;
+    clearTimeout(state.capture.timer);
+    for (const host of state.capture.hosts) host.style.display = '';
+    state.capture = null;
+  }
+
+  function restoreAfterCapture(op) {
+    // Only the newest capture's own restore ends the hiding.
+    if (!state.capture || op < state.capture.op) return;
+    restoreCaptured();
+  }
+
+  // Anything drawn while a capture is in flight joins the capture: a newer
+  // scan raising its indicator must not walk into an older scan's screenshot.
+  function trackDuringCapture(host) {
+    if (!state.capture) return;
+    host.style.display = 'none';
+    state.capture.hosts.add(host);
+  }
+
+  function untrack(host) {
+    if (state.capture) state.capture.hosts.delete(host);
   }
 
   function show(result) {
@@ -374,6 +467,12 @@
       bodyHtml = `
         <div class="error">Your browser does not let extensions scan this page.</div>
         <div class="hint">Browser pages, extension stores and the built-in PDF viewer are off limits. Try the scan on a regular website.</div>`;
+    } else if (result.reason === 'page-busy') {
+      // The screenshot was dropped rather than risk photographing this card.
+      // Saying "no QR code found" here would be a decode we never ran.
+      bodyHtml = `
+        <div class="error">The page did not respond in time, so we stopped before taking a screenshot.</div>
+        <div class="hint">Nothing was scanned. Try again in a moment.</div>`;
     } else {
       const what = result.source === 'area' ? 'in that area' : 'in this image';
       bodyHtml = `
@@ -401,6 +500,7 @@
     }
 
     root.appendChild(card);
+    trackDuringCapture(host);
     (document.body || document.documentElement).appendChild(host);
     state.host = host;
     state.root = root;
@@ -409,16 +509,39 @@
 
   api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || typeof msg.type !== 'string') return false;
-    if (msg.type === 'qrgenie:show-result') show(msg.result);
-    else if (msg.type === 'qrgenie:show-busy') showBusy(msg.source);
-    else if (msg.type === 'qrgenie:restore-after-capture') restoreAfterCapture();
-    else if (msg.type === 'qrgenie:hide-for-capture') {
-      // The only message we answer: the worker waits for it before capturing.
-      hideForCapture(() => sendResponse({ hidden: true }));
+    const op = opOf(msg);
+
+    if (msg.type === 'qrgenie:hide-for-capture') {
+      // The only message we answer, and the only one we honour even from a
+      // superseded scan: hiding is always safe, and the worker treats a
+      // missing answer as a reason not to capture at all.
+      claim(op);
+      hideForCapture(op, () => sendResponse({ hidden: true }));
       return true;
     }
+
+    if (msg.type === 'qrgenie:restore-after-capture') {
+      // Gated on the capture, not on the newest scan: a scan that raised its
+      // indicator without capturing anything must not strand it off screen.
+      restoreAfterCapture(op);
+      return false;
+    }
+
+    // What is left draws on screen, and a scan that a newer one has replaced
+    // no longer owns that corner: its late result would clear a live
+    // indicator, its late indicator would clear a fresh result.
+    if (superseded(op)) return false;
+    claim(op);
+
+    if (msg.type === 'qrgenie:show-result') show(msg.result);
+    else if (msg.type === 'qrgenie:show-busy') showBusy(msg.source);
     return false;
   });
+
+  // The worker's fallback when this listener does not answer in time: same
+  // hiding, without the wait for a repaint (the worker waits instead). It
+  // lives on the content script's own window, which the page cannot reach.
+  window.__qrgenieHideNow = hideNow;
 
   window.__qrgenieOverlay = true;
 })();

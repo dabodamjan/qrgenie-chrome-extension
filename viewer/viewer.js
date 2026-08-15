@@ -48,6 +48,11 @@
           'Browser pages, extension stores and the built-in PDF viewer are off limits. Try the scan on a regular website.'
         )
       );
+    } else if (result.reason === 'page-busy') {
+      body.appendChild(
+        el('div', null, 'The page did not respond in time, so we stopped before taking a screenshot.')
+      );
+      body.appendChild(el('div', 'hint', 'Nothing was scanned. Try again in a moment.'));
     } else {
       body.appendChild(el('div', null, 'We could not find a QR code there.'));
       body.appendChild(
