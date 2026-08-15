@@ -5,7 +5,7 @@
  * appends and removes, and the tests only ever ask what is on screen and
  * whether it is displayed.
  *
- * loadOverlay() -> { send, sendAsync, hosts, hideNow, document }
+ * loadOverlay() -> { send, sendAsync, hosts, hideNow, runTimers, document }
  */
 'use strict';
 const fs = require('node:fs');
@@ -65,13 +65,55 @@ function makeElement(tagName) {
  */
 const LONG_TIMER_MS = 1000;
 
-function armTimer(fn, ms) {
-  const t = setTimeout(fn, ms);
-  if (ms >= LONG_TIMER_MS && typeof t.unref === 'function') t.unref();
-  return t;
+/*
+ * Every timer the overlay arms is also recorded, so a test can fire the long
+ * give-up ones (a capture lease running out, the indicator giving up) without
+ * sitting through five real seconds. Firing one cancels the real timer, so it
+ * never runs twice.
+ */
+function makeClock() {
+  const pending = new Set();
+
+  function arm(fn, ms) {
+    const entry = { ms, fn, handle: null };
+    entry.handle = setTimeout(() => {
+      pending.delete(entry);
+      fn();
+    }, ms);
+    if (ms >= LONG_TIMER_MS && typeof entry.handle.unref === 'function') entry.handle.unref();
+    pending.add(entry);
+    return entry.handle;
+  }
+
+  function cancel(handle) {
+    clearTimeout(handle);
+    for (const entry of pending) {
+      if (entry.handle === handle) pending.delete(entry);
+    }
+  }
+
+  // Fires every pending timer armed with exactly this delay, in the order they
+  // were armed. Returns how many ran, so a test can assert it armed anything.
+  function run(ms) {
+    const due = [...pending].filter((entry) => entry.ms === ms);
+    let fired = 0;
+    for (const entry of due) {
+      // One of these can cancel another (a give-up timer being renewed), and a
+      // cancelled timer must not fire.
+      if (!pending.has(entry)) continue;
+      pending.delete(entry);
+      clearTimeout(entry.handle);
+      fired++;
+      entry.fn();
+    }
+    return fired;
+  }
+
+  return { arm, cancel, run };
 }
 
 function loadOverlay() {
+  const clock = makeClock();
   const source = fs.readFileSync(
     path.join(__dirname, '..', '..', 'content', 'overlay.js'),
     'utf8'
@@ -100,9 +142,9 @@ function loadOverlay() {
         sendMessage() {}
       }
     },
-    setTimeout: (fn, ms) => armTimer(fn, ms),
-    clearTimeout: (t) => clearTimeout(t),
-    requestAnimationFrame: (fn) => armTimer(fn, 0)
+    setTimeout: (fn, ms) => clock.arm(fn, ms),
+    clearTimeout: (t) => clock.cancel(t),
+    requestAnimationFrame: (fn) => clock.arm(fn, 0)
   };
 
   const context = vm.createContext(sandbox);
@@ -116,9 +158,14 @@ function loadOverlay() {
   return {
     document,
 
-    // Fire and forget, for the messages the overlay does not answer.
+    // For the messages the overlay answers on the spot. Returns what the
+    // worker would receive, which is undefined when it answered nothing.
     send(msg) {
-      listener(msg, {}, () => {});
+      let answer;
+      listener(msg, {}, (value) => {
+        answer = value;
+      });
+      return answer;
     },
 
     // For qrgenie:hide-for-capture, which answers once the page would have
@@ -133,6 +180,11 @@ function loadOverlay() {
     // The worker's forced-hide hook, published on the content script's window.
     hideNow(op) {
       return sandbox.__qrgenieHideNow(op);
+    },
+
+    // Fires the overlay's own give-up timers without waiting for them.
+    runTimers(ms) {
+      return clock.run(ms);
     },
 
     /*
